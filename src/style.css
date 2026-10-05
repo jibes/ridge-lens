@@ -147,7 +147,7 @@ main {
   color: #fff;
 }
 /* Sensormodus: nur Sensor-Knopf und Status, maximale Bildfläche */
-.sensor-on form > :not(#sensor),
+.sensor-on form > :not(#sensor):not(#gps),
 .sensor-on footer {
   display: none;
 }

@@ -14,6 +14,10 @@ npm run build    # nach dist/
 
 Zustand steckt in der URL: `#lat,lon,höhe,blickrichtung,sichtfeld`, z. B. `#47.0566,8.4851,1797,213,20` (Rigi Kulm, Blick auf die Jungfrau). Höhe leer lassen = aus dem Höhenmodell.
 
+## Start
+
+Beim Öffnen: Standort per GPS, auf Touch-Geräten zusätzlich Sensormodus (iOS: erst nach Tippen auf „Sensor“). Ohne GPS-Freigabe wird der Ort aus dem Link bzw. Rigi Kulm gezeigt; ohne Sensordaten schaltet der Sensormodus nach 3 s ab und die Statuszeile nennt den Grund (z. B. Brave blockiert Bewegungssensoren).
+
 ## App installieren
 
 Android (Chrome/Brave): Knopf „Installieren“ oder Browsermenü → „Zum Startbildschirm hinzufügen“. iOS (Safari): Teilen → „Zum Home-Bildschirm“.

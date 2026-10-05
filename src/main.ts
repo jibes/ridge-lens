@@ -30,6 +30,19 @@ const radiusIn = $<HTMLInputElement>('radius');
 const presetSel = $<HTMLSelectElement>('preset');
 const hiddenIn = $<HTMLInputElement>('hidden');
 const statusEl = $<HTMLDivElement>('status');
+
+/** Statuszeile = aktueller Zustand + dauerhafte Hinweise (GPS, Sensor). */
+let baseStatus = '';
+const notices = new Map<string, string>();
+function setStatus(text: string) {
+  baseStatus = text;
+  statusEl.textContent = [baseStatus, ...notices.values()].filter(Boolean).join(' · ');
+}
+function setNotice(key: string, text: string | null) {
+  if (text) notices.set(key, text);
+  else notices.delete(key);
+  setStatus(baseStatus);
+}
 const view = $<HTMLCanvasElement>('view');
 const overview = $<HTMLCanvasElement>('overview');
 const sensorBtn = $<HTMLButtonElement>('sensor');
@@ -139,23 +152,22 @@ const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'modu
 worker.onmessage = (ev: MessageEvent<WorkerMessage>) => {
   const msg = ev.data;
   if (msg.type === 'progress') {
-    statusEl.textContent = msg.text;
+    setStatus(msg.text);
     return;
   }
   busy = false;
   if (msg.type === 'error') {
-    statusEl.textContent = `Fehler: ${msg.message}`;
+    setStatus(`Fehler: ${msg.message}`);
     return;
   }
   pano = msg.result;
   selected = null;
   updateAlignBar();
   const visible = pano.peaks.filter((p) => p.visible).length;
-  statusEl.textContent =
-    `Augenhöhe ${Math.round(pano.h0)} m (DEM ${Math.round(pano.demElevation)} m) · ` +
+  setStatus(`Augenhöhe ${Math.round(pano.h0)} m (DEM ${Math.round(pano.demElevation)} m) · ` +
     `${visible}/${pano.peaks.length} Gipfel sichtbar · ${(pano.millis / 1000).toFixed(1)} s` +
     (pano.failedTiles ? ` · ${pano.failedTiles} Höhenkacheln fehlen` : '') +
-    (pano.peakError ? ` · ${pano.peakError}` : '');
+    (pano.peakError ? ` · ${pano.peakError}` : ''));
   requestRender();
 };
 
@@ -164,7 +176,7 @@ function compute() {
   const lat = Number(latIn.value);
   const lon = Number(lonIn.value);
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 85) {
-    statusEl.textContent = 'Ungültige Koordinaten';
+    setStatus('Ungültige Koordinaten');
     return;
   }
   const req: ComputeRequest = {
@@ -175,7 +187,7 @@ function compute() {
     groundElevation: eleIn.value ? Number(eleIn.value) : null,
   };
   busy = true;
-  statusEl.textContent = 'Starte …';
+  setStatus('Starte …');
   writeHash();
   worker.postMessage(req);
 }
@@ -194,26 +206,32 @@ presetSel.addEventListener('change', () => {
 for (const el of [latIn, lonIn, eleIn]) el.addEventListener('input', () => (presetSel.value = ''));
 hiddenIn.addEventListener('change', requestRender);
 
-$<HTMLButtonElement>('gps').addEventListener('click', () => {
-  if (!navigator.geolocation) {
-    statusEl.textContent = 'Kein GPS verfügbar';
-    return;
-  }
-  statusEl.textContent = 'Bestimme Standort …';
-  navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      latIn.value = pos.coords.latitude.toFixed(5);
-      lonIn.value = pos.coords.longitude.toFixed(5);
-      // GPS-Höhe nur bei guter Genauigkeit, sonst Höhenmodell
-      const alt = pos.coords.altitude;
-      const acc = pos.coords.altitudeAccuracy;
-      eleIn.value = alt !== null && acc !== null && acc < 15 ? alt.toFixed(0) : '';
-      presetSel.value = '';
-      compute();
-    },
-    (err) => (statusEl.textContent = `GPS-Fehler: ${err.message}`),
-    { enableHighAccuracy: true, timeout: 20000 },
+/** Standort per GPS in die Eingabefelder; liefert Fehlertext oder null. */
+function locate(): Promise<string | null> {
+  if (!navigator.geolocation) return Promise.resolve('kein GPS verfügbar');
+  setStatus('Bestimme Standort …');
+  return new Promise((resolve) =>
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        latIn.value = pos.coords.latitude.toFixed(5);
+        lonIn.value = pos.coords.longitude.toFixed(5);
+        // GPS-Höhe nur bei guter Genauigkeit, sonst Höhenmodell
+        const alt = pos.coords.altitude;
+        const acc = pos.coords.altitudeAccuracy;
+        eleIn.value = alt !== null && acc !== null && acc < 15 ? alt.toFixed(0) : '';
+        presetSel.value = '';
+        resolve(null);
+      },
+      (err) => resolve(err.code === err.PERMISSION_DENIED ? 'Standortzugriff verweigert' : err.message || 'GPS-Fehler'),
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 },
+    ),
   );
+}
+
+$<HTMLButtonElement>('gps').addEventListener('click', async () => {
+  const err = await locate();
+  setNotice('gps', err && `GPS: ${err}`);
+  if (!err) compute();
 });
 
 // --- Interaktion: Drehen, Neigen, Zoomen --------------------------------------------
@@ -356,7 +374,7 @@ alignApply.addEventListener('click', () => {
     offset.heading = deltaDeg(selected.az, a.heading);
     offset.pitch = Math.max(-20, Math.min(20, selected.angle - a.pitch));
     saveOffset();
-    statusEl.textContent = `Kompass auf ${selected.name} ausgerichtet (Korrektur ${fmtSigned(offset.heading)}°).`;
+    setStatus(`Kompass auf ${selected.name} ausgerichtet (Korrektur ${fmtSigned(offset.heading)}°).`);
   } else if (!sensorOn) {
     cam.heading = selected.az;
     cam.pitch = Math.max(-30, Math.min(30, selected.angle));
@@ -395,17 +413,24 @@ function syncSensor() {
 }
 
 let sensorTimeout = 0;
-sensorBtn.addEventListener('click', async () => {
-  if (sensorOn) {
-    tracker.stop();
-    sensorOn = false;
-    cam.pitch = Math.max(-30, Math.min(30, cam.pitch));
-  } else {
+
+/** iOS verlangt für Sensoren eine Nutzergeste; dort kein automatischer Start. */
+const sensorNeedsGesture =
+  typeof (DeviceOrientationEvent as unknown as { requestPermission?: unknown }).requestPermission === 'function' &&
+  !('brave' in navigator);
+
+async function setSensor(on: boolean) {
+  clearTimeout(sensorTimeout);
+  if (on) {
+    setNotice('sensor', null);
     const permission = await tracker.start();
     sensorOn = true;
     sensorText.textContent = 'Warte auf Sensordaten …';
-    clearTimeout(sensorTimeout);
-    sensorTimeout = window.setTimeout(() => void explainMissingSensors(permission), 3000);
+    sensorTimeout = window.setTimeout(() => void handleMissingSensors(permission), 3000);
+  } else {
+    tracker.stop();
+    sensorOn = false;
+    cam.pitch = Math.max(-30, Math.min(30, cam.pitch));
   }
   sensorBtn.classList.toggle('active', sensorOn);
   sensorBtn.setAttribute('aria-pressed', String(sensorOn));
@@ -413,26 +438,29 @@ sensorBtn.addEventListener('click', async () => {
   document.body.classList.toggle('sensor-on', sensorOn);
   updateAlignBar();
   requestRender();
-});
+}
 
-/** Keine Daten nach Aktivierung: Ursache eingrenzen und konkrete Abhilfe nennen. */
-async function explainMissingSensors(permission: 'granted' | 'denied' | null) {
+sensorBtn.addEventListener('click', () => void setSensor(!sensorOn));
+
+/** Keine Daten nach Aktivierung: Sensormodus aus, Ursache und Abhilfe in der Statuszeile. */
+async function handleMissingSensors(permission: 'granted' | 'denied' | null) {
   if (!sensorOn || tracker.angles) return;
   const perms = await OrientationTracker.sensorPermissions();
-  const blocked = Object.entries(perms)
-    .filter(([, s]) => s === 'denied')
-    .map(([n]) => n);
+  const blocked = Object.values(perms).includes('denied');
+  let msg: string;
   if (!window.isSecureContext) {
-    sensorText.textContent = 'Keine Sensordaten: Seite muss über HTTPS geladen werden.';
-  } else if (permission === 'denied' || blocked.length) {
-    sensorText.textContent =
-      `Bewegungssensoren blockiert${blocked.length ? ` (${blocked.join(', ')})` : ''}. ` +
-      'Brave/Chrome: Symbol links in der Adressleiste → Berechtigungen/Website-Einstellungen → ' +
-      'Bewegungssensoren → Zulassen. Bei Brave ggf. zusätzlich Shields für diese Seite aus. Dann neu laden.';
+    msg = 'Keine Sensordaten: Seite muss über HTTPS geladen werden.';
+  } else if ('brave' in navigator) {
+    msg = 'Brave blockiert Bewegungssensoren. Für Sensormodus Chrome oder Firefox verwenden; Ziehen funktioniert weiterhin.';
+  } else if (permission === 'denied' || blocked) {
+    msg =
+      'Bewegungssensoren blockiert: Symbol links in der Adressleiste → Website-Einstellungen → ' +
+      'Bewegungssensoren → Zulassen, dann neu laden.';
   } else {
-    sensorText.textContent =
-      'Keine Sensordaten. Bei Brave: Shields für diese Seite deaktivieren (Fingerprinting-Schutz) und neu laden.';
+    msg = 'Keine Sensordaten (Gerät ohne Lagesensor?). Blick per Ziehen steuern.';
   }
+  await setSensor(false);
+  setNotice('sensor', msg);
 }
 
 $<HTMLButtonElement>('offset-reset').addEventListener('click', () => {
@@ -475,9 +503,19 @@ window.addEventListener('appinstalled', () => (installBtn.hidden = true));
 
 // --- Start ------------------------------------------------------------------------
 
-if (!readHash()) {
+// Ort aus URL bzw. Vorgabe als Rückfall; standardmäßig GPS und Sensoren
+const fromHash = readHash();
+if (!fromHash) {
   applyPreset(PRESETS[0]);
   presetSel.value = '0';
 }
 resize();
-compute();
+// Sensoren automatisch nur auf Touch-Geräten; Desktop hat keine Lagesensoren
+if (matchMedia('(pointer: coarse)').matches) {
+  if (sensorNeedsGesture) setNotice('sensor', 'Für Ausrichtung per Handy „Sensor“ antippen.');
+  else void setSensor(true);
+}
+void locate().then((err) => {
+  if (err) setNotice('gps', `GPS: ${err} – zeige ${fromHash ? 'Ort aus Link' : PRESETS[0].name}`);
+  compute();
+});
