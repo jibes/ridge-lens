@@ -478,6 +478,23 @@ window.addEventListener('hashchange', () => {
   }
 });
 
+// --- Bildschirm an lassen (Screen Wake Lock) --------------------------------------
+
+let wakeLock: WakeLockSentinel | null = null;
+async function keepScreenOn() {
+  if (!('wakeLock' in navigator) || document.visibilityState !== 'visible' || (wakeLock && !wakeLock.released)) return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+  } catch {
+    // z. B. Energiesparmodus; ohne Wake Lock weiter
+  }
+}
+// Sperre endet beim Wechsel in den Hintergrund; danach neu anfordern
+document.addEventListener('visibilitychange', () => void keepScreenOn());
+// Manche Browser verlangen eine Nutzergeste
+document.addEventListener('pointerdown', () => void keepScreenOn());
+void keepScreenOn();
+
 // --- Installierbare App (PWA) ------------------------------------------------------
 
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
