@@ -1,17 +1,30 @@
 # Ridge Lens
 
-Bergpanorama im Browser: berechnet aus Standort und Höhenmodell die sichtbaren Bergketten und beschriftet die Gipfel. Ziel ist ein AR-Overlay auf das Kamerabild; Stufe 1 läuft noch ohne Kamera.
+Bergpanorama im Browser: berechnet aus Standort und Höhenmodell die sichtbaren Bergketten und beschriftet die Gipfel. Ziel ist ein AR-Overlay auf das Kamerabild; aktuell ohne Kamera, aber der Blick kann der Handy-Ausrichtung folgen.
 
 ## Entwicklung
 
 ```sh
 npm install
 npm run dev      # http://localhost:5173
+npm run dev:phone  # HTTPS im LAN (selbstsigniert) – nötig für Sensoren auf dem Handy
 npm test         # Geometrie- und Raycasting-Tests
 npm run build    # nach dist/
 ```
 
 Zustand steckt in der URL: `#lat,lon,höhe,blickrichtung,sichtfeld`, z. B. `#47.0566,8.4851,1797,213,20` (Rigi Kulm, Blick auf die Jungfrau). Höhe leer lassen = aus dem Höhenmodell.
+
+## Sensormodus
+
+„Sensor“ aktiviert die Geräteorientierung (iOS fragt nach Erlaubnis). Der Blick folgt dann dem Handy, das rote Fadenkreuz markiert die Blickrichtung der Rückkamera.
+
+Kompass korrigieren:
+- **Anpeilen:** Gipfel-Label antippen → Fadenkreuz auf den echten Gipfel richten → „Übernehmen“. Setzt Korrektur für Kurs und Neigung.
+- **Feinjustieren:** Ziehen verschiebt im Sensormodus die Korrektur statt des Blicks (Pfeiltasten: 0,2°-Schritte).
+
+Die Korrektur bleibt im Browser gespeichert. Sie enthält auch die magnetische Missweisung (Alpen ≈ +3°), die Handy-Kompasse nicht abziehen.
+
+Technik (`src/orientation.ts`): Rotationsmatrix aus α/β/γ (W3C), Blickachse = −z des Geräts, Rolle relativ zum Horizont, Bildschirmdrehung (Querformat) berücksichtigt. Android: `deviceorientationabsolute`; iOS: relatives α plus `webkitCompassHeading` als geglätteter Nordbezug. Glättung auf Richtungsvektoren statt Winkeln (kein 0°/360°-Sprung).
 
 ## Funktionsweise
 
@@ -27,7 +40,7 @@ Zustand steckt in der URL: `#lat,lon,höhe,blickrichtung,sichtfeld`, z. B. `#47.
 
 ## Nächste Stufen
 
-1. Geräteorientierung (Kompass, Neigung) steuert den Blick; manueller Kompass-Offset.
+1. ~~Geräteorientierung steuert den Blick; Kompass-Korrektur.~~
 2. Kamerabild unter dem Overlay, Sichtfeld-Kalibrierung.
 3. Automatischer Abgleich: Skyline aus dem Kamerabild gegen berechneten Horizont korrelieren.
 

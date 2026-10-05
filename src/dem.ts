@@ -56,13 +56,16 @@ export class Dem {
     return y * this.n + x;
   }
 
-  /** Lädt alle Kacheln, die einen Kreis mit Radius `radius` (m) um `center` abdecken. */
+  /**
+   * Lädt alle Kacheln, die einen Kreis mit Radius `radius` (m) um `center` abdecken.
+   * Liefert die Anzahl fehlgeschlagener Kacheln.
+   */
   async load(
     center: LatLon,
     radius: number,
     fetcher: TileFetcher,
     onProgress?: (done: number, total: number) => void,
-  ): Promise<void> {
+  ): Promise<{ total: number; failed: number }> {
     const corners = [0, 90, 180, 270].map((az) => destination(center, az, radius));
     const [x0, y0] = lonLatToPixel(corners[0].lat, corners[3].lon, this.z);
     const [x1, y1] = lonLatToPixel(corners[2].lat, corners[1].lon, this.z);
@@ -74,15 +77,19 @@ export class Dem {
       }
     }
     let done = 0;
+    let failed = 0;
     const queue = jobs.slice();
     const worker = async () => {
       for (let job = queue.shift(); job; job = queue.shift()) {
         const [x, y] = job;
-        this.tiles.set(this.key(x, y), await fetcher(this.z, x, y).catch(() => null));
+        const tile = await fetcher(this.z, x, y).catch(() => null);
+        if (!tile) failed++;
+        this.tiles.set(this.key(x, y), tile);
         onProgress?.(++done, jobs.length);
       }
     };
     await Promise.all(Array.from({ length: 6 }, worker));
+    return { total: jobs.length, failed };
   }
 
   private pixel(px: number, py: number): number {

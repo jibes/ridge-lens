@@ -53,12 +53,19 @@ describe('dem', () => {
 });
 
 describe('projection', () => {
-  const cam = { heading: 90, pitch: 0, hfov: 90, width: 1000, height: 500 };
+  const cam = { heading: 90, pitch: 0, roll: 0, hfov: 90, width: 1000, height: 500 };
   it('center and edges', () => {
     expect(project(cam, 90, 0)).toEqual([500, 250]);
     const [x] = project(cam, 135, 0)!;
     expect(x).toBeCloseTo(1000, 6);
     expect(project(cam, 270, 0)).toBeNull();
+  });
+  it('roll: right edge up tilts horizon down on the right', () => {
+    const [x, y] = project({ ...cam, roll: 10 }, 120, 0)!;
+    expect(x).toBeGreaterThan(500);
+    expect(y).toBeGreaterThan(250);
+    // Bildmitte bleibt
+    expect(project({ ...cam, roll: 10 }, 90, 0)).toEqual([500, 250]);
   });
   it('pitch moves horizon down', () => {
     const [, y] = project({ ...cam, pitch: 10 }, 90, 0)!;

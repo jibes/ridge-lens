@@ -1,9 +1,10 @@
 import { deltaDeg, normalizeDeg } from './geo';
-import { project, type Camera } from './projection';
+import { azimuthInView, projector, type Camera } from './projection';
 import type { PanoramaResult, Peak } from './protocol';
 
 const COMPASS = ['N', 'NO', 'O', 'SO', 'S', 'SW', 'W', 'NW'];
 const DIST_CLASSES = 10;
+const RAD = Math.PI / 180;
 
 /** Farbe nach Distanz: nah dunkel/warm, fern hell/blau (Luftperspektive). */
 function distColor(t: number, alpha = 1): string {
@@ -15,6 +16,9 @@ function distColor(t: number, alpha = 1): string {
 
 export interface RenderOptions {
   showHidden: boolean;
+  /** Fadenkreuz in Bildmitte (Sensormodus). */
+  crosshair: boolean;
+  selectedPeakId: number | null;
 }
 
 export interface PlacedLabel {
@@ -22,6 +26,8 @@ export interface PlacedLabel {
   x: number;
   y: number;
 }
+
+type Project = (az: number, el: number) => [number, number] | null;
 
 export function renderView(
   ctx: CanvasRenderingContext2D,
@@ -36,42 +42,44 @@ export function renderView(
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, W, H);
 
+  const proj = projector(cam);
   if (pano) {
-    drawGround(ctx, cam, pano);
-    drawLines(ctx, cam, pano);
+    drawGround(ctx, cam, pano, proj);
+    drawLines(ctx, cam, pano, proj);
   }
-  drawCompass(ctx, cam);
-  return pano ? drawPeaks(ctx, cam, pano, opts) : [];
+  drawCompass(ctx, cam, proj);
+  const placed = pano ? drawPeaks(ctx, cam, pano, opts, proj) : [];
+  if (opts.crosshair) drawCrosshair(ctx, cam);
+  return placed;
 }
 
 function visibleBins(cam: Camera, pano: PanoramaResult): number[] {
   const n = pano.horizon.length;
-  const half = Math.min(89, cam.hfov / 2 + 2);
   const out: number[] = [];
   for (let i = 0; i < n; i++) {
-    if (Math.abs(deltaDeg(i * pano.azStep, cam.heading)) <= half) out.push(i);
+    if (azimuthInView(cam, i * pano.azStep, 3)) out.push(i);
   }
   out.sort((a, b) => deltaDeg(a * pano.azStep, cam.heading) - deltaDeg(b * pano.azStep, cam.heading));
   return out;
 }
 
-function drawGround(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaResult) {
-  const bins = visibleBins(cam, pano);
-  ctx.beginPath();
-  let started = false;
-  let lastX = 0;
-  for (const i of bins) {
-    const p = project(cam, i * pano.azStep, pano.horizon[i]);
-    if (!p) continue;
-    if (!started) {
-      ctx.moveTo(p[0], cam.height);
-      started = true;
-    }
-    ctx.lineTo(p[0], p[1]);
-    lastX = p[0];
+function drawGround(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaResult, proj: Project) {
+  const line: [number, number][] = [];
+  for (const i of visibleBins(cam, pano)) {
+    const p = proj(i * pano.azStep, pano.horizon[i]);
+    if (p) line.push(p);
   }
-  if (!started) return;
-  ctx.lineTo(lastX, cam.height);
+  if (line.length < 2) return;
+  // Polygon nach "unten" (rollkorrigiert) schließen
+  const big = 4 * (cam.width + cam.height);
+  const dx = -Math.sin(cam.roll * RAD) * big;
+  const dy = Math.cos(cam.roll * RAD) * big;
+  const first = line[0];
+  const last = line[line.length - 1];
+  ctx.beginPath();
+  ctx.moveTo(first[0] + dx, first[1] + dy);
+  for (const [x, y] of line) ctx.lineTo(x, y);
+  ctx.lineTo(last[0] + dx, last[1] + dy);
   ctx.closePath();
   const g = ctx.createLinearGradient(0, 0, 0, cam.height);
   g.addColorStop(0, '#b9c4cf');
@@ -80,10 +88,9 @@ function drawGround(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaRe
   ctx.fill();
 }
 
-function drawLines(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaResult) {
+function drawLines(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaResult, proj: Project) {
   const { linePoints: pts, lineOffsets: off } = pano;
   const radius = pano.request.radius;
-  const half = Math.min(89, cam.hfov / 2 + 2);
   // Nach Distanzklassen bündeln: ein Pfad je Klasse, fern zuerst
   const paths = Array.from({ length: DIST_CLASSES }, () => new Path2D());
   for (let l = 0; l + 1 < off.length; l++) {
@@ -97,11 +104,7 @@ function drawLines(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaRes
     let pen = false;
     for (let k = a; k < b; k++) {
       const az = pts[k * 3];
-      if (Math.abs(deltaDeg(az, cam.heading)) > half) {
-        pen = false;
-        continue;
-      }
-      const p = project(cam, az, pts[k * 3 + 1]);
+      const p = azimuthInView(cam, az, 3) ? proj(az, pts[k * 3 + 1]) : null;
       if (!p) {
         pen = false;
         continue;
@@ -121,23 +124,41 @@ function drawLines(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaRes
   }
 }
 
-function drawCompass(ctx: CanvasRenderingContext2D, cam: Camera) {
-  const step = cam.hfov > 60 ? 10 : cam.hfov > 25 ? 5 : 1;
+function drawCompass(ctx: CanvasRenderingContext2D, cam: Camera, proj: Project) {
+  // Schrittweite so, dass Beschriftungen mindestens ~48 px auseinanderliegen
+  const pxPerDeg = cam.width / cam.hfov;
+  const step = [1, 2, 5, 10, 15, 30, 45].find((s) => s * pxPerDeg >= 48) ?? 45;
+  // Skala knapp unter dem oberen Bildrand, entlang konstanter Höhe
+  const vhalf = Math.atan((Math.tan((cam.hfov / 2) * RAD) * cam.height) / cam.width) / RAD;
+  const el = cam.pitch + vhalf * 0.93;
   ctx.font = '12px system-ui, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(20,30,45,0.8)';
   for (let a = 0; a < 360; a += step) {
-    const d = deltaDeg(a, cam.heading);
-    if (Math.abs(d) > cam.hfov / 2 + 1) continue;
-    const p = project(cam, a, cam.pitch);
+    if (!azimuthInView(cam, a, 1)) continue;
+    const p = proj(a, el);
     if (!p) continue;
     const major = a % 45 === 0;
-    ctx.fillStyle = 'rgba(20,30,45,0.8)';
-    ctx.fillRect(p[0] - 0.5, 0, 1, major ? 12 : 6);
-    if (major || step <= 5 || a % 30 === 0) {
-      ctx.fillText(major ? COMPASS[a / 45] : `${a}°`, p[0], 14);
-    }
+    ctx.fillRect(p[0] - 0.5, p[1] - (major ? 12 : 6), 1, major ? 12 : 6);
+    ctx.fillText(major ? COMPASS[a / 45] : `${a}°`, p[0], p[1] + 2);
   }
+}
+
+function drawCrosshair(ctx: CanvasRenderingContext2D, cam: Camera) {
+  const x = cam.width / 2;
+  const y = cam.height / 2;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(192,57,43,0.9)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(x, y, 14, 0, Math.PI * 2);
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    ctx.moveTo(x + dx * 6, y + dy * 6);
+    ctx.lineTo(x + dx * 24, y + dy * 24);
+  }
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawPeaks(
@@ -145,54 +166,60 @@ function drawPeaks(
   cam: Camera,
   pano: PanoramaResult,
   opts: RenderOptions,
+  proj: Project,
 ): PlacedLabel[] {
   const cands: PlacedLabel[] = [];
   for (const peak of pano.peaks) {
-    if (!peak.visible && !opts.showHidden) continue;
-    if (Math.abs(deltaDeg(peak.az, cam.heading)) > cam.hfov / 2 + 1) continue;
-    const p = project(cam, peak.az, peak.angle);
-    if (!p || p[1] < 0 || p[1] > cam.height) continue;
+    const selected = peak.id === opts.selectedPeakId;
+    if (!peak.visible && !opts.showHidden && !selected) continue;
+    if (!azimuthInView(cam, peak.az, 1)) continue;
+    const p = proj(peak.az, peak.angle);
+    if (!p || p[0] < -20 || p[0] > cam.width + 20 || p[1] < 0 || p[1] > cam.height) continue;
     cands.push({ peak, x: p[0], y: p[1] });
   }
-  // Priorität: sichtbar vor verdeckt, dann Höhe
-  cands.sort((a, b) => Number(b.peak.visible) - Number(a.peak.visible) || b.peak.ele - a.peak.ele);
+  // Priorität: ausgewählt, sichtbar vor verdeckt, dann Höhe
+  const rank = (l: PlacedLabel) => (l.peak.id === opts.selectedPeakId ? 2 : l.peak.visible ? 1 : 0);
+  cands.sort((a, b) => rank(b) - rank(a) || b.peak.ele - a.peak.ele);
   const placed: PlacedLabel[] = [];
   const minGap = 15;
   for (const c of cands) {
     if (placed.every((p) => Math.abs(p.x - c.x) >= minGap)) placed.push(c);
   }
 
-  const labelTop = 34;
+  const labelTop = 54;
   ctx.font = '13px system-ui, sans-serif';
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
   for (const { peak, x, y } of placed) {
+    const selected = peak.id === opts.selectedPeakId;
     const text = `${peak.name}  ${Math.round(peak.ele)} m · ${(peak.dist / 1000).toFixed(peak.dist < 10_000 ? 1 : 0)} km`;
     // Text oben bündig; Leitlinie vom Gipfel bis zum Textende
     const top = Math.max(labelTop + 10, Math.min(y - 12, labelTop + ctx.measureText(text).width + 4));
-    ctx.strokeStyle = peak.visible ? 'rgba(20,25,35,0.7)' : 'rgba(20,25,35,0.25)';
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = selected ? '#c0392b' : peak.visible ? 'rgba(20,25,35,0.7)' : 'rgba(20,25,35,0.25)';
+    ctx.lineWidth = selected ? 2 : 1;
     ctx.beginPath();
     ctx.moveTo(x + 0.5, y - 3);
     ctx.lineTo(x + 0.5, top);
     ctx.stroke();
-    ctx.fillStyle = peak.visible ? '#c0392b' : 'rgba(80,80,80,0.5)';
+    ctx.fillStyle = peak.visible || selected ? '#c0392b' : 'rgba(80,80,80,0.5)';
     ctx.beginPath();
-    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.arc(x, y, selected ? 5 : 3, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.save();
     ctx.translate(x, top - 4);
     ctx.rotate(-Math.PI / 2);
+    ctx.font = selected ? 'bold 13px system-ui, sans-serif' : '13px system-ui, sans-serif';
     ctx.lineWidth = 3;
     ctx.strokeStyle = 'rgba(255,255,255,0.85)';
     ctx.strokeText(text, 0, 0);
-    ctx.fillStyle = peak.visible ? '#141a24' : 'rgba(20,26,36,0.45)';
+    ctx.fillStyle = selected ? '#a5281b' : peak.visible ? '#141a24' : 'rgba(20,26,36,0.45)';
     ctx.fillText(text, 0, 0);
     ctx.restore();
   }
   return placed;
 }
+
 
 /** 360°-Übersichtsstreifen (äquirektangulär) mit Markierung des Sichtfelds. */
 export function renderOverview(

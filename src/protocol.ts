@@ -35,6 +35,8 @@ export interface PanoramaResult {
   lineOffsets: Uint32Array;
   peaks: Peak[];
   peakError: string | null;
+  /** Nicht geladene Höhenkacheln (Lücken im Panorama). */
+  failedTiles: number;
   millis: number;
 }
 

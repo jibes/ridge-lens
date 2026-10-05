@@ -35,8 +35,12 @@ async function compute(req: ComputeRequest): Promise<PanoramaResult> {
 
   const progress = (label: string) => (done: number, total: number) =>
     post({ type: 'progress', text: `${label}: ${done}/${total} Kacheln` });
-  await near.load(observer, NEAR_RADIUS, fetchTerrariumTile, progress('Höhenmodell nah'));
-  await far.load(observer, req.radius, fetchTerrariumTile, progress('Höhenmodell fern'));
+  const nearLoad = await near.load(observer, NEAR_RADIUS, fetchTerrariumTile, progress('Höhenmodell nah'));
+  const farLoad = await far.load(observer, req.radius, fetchTerrariumTile, progress('Höhenmodell fern'));
+  const failed = nearLoad.failed + farLoad.failed;
+  if (farLoad.total > 0 && farLoad.failed === farLoad.total) {
+    throw new Error('Höhendaten konnten nicht geladen werden (Netzwerk?)');
+  }
 
   const sample: Sampler = (lat, lon, d) => {
     if (d < NEAR_RADIUS) {
@@ -100,6 +104,7 @@ async function compute(req: ComputeRequest): Promise<PanoramaResult> {
     lineOffsets: lines.offsets,
     peaks,
     peakError,
+    failedTiles: failed,
     millis: performance.now() - t0,
   };
 }

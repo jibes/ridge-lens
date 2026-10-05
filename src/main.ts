@@ -1,6 +1,7 @@
-import { normalizeDeg } from './geo';
+import { deltaDeg, normalizeDeg } from './geo';
+import { OrientationTracker } from './orientation';
 import type { Camera } from './projection';
-import type { ComputeRequest, PanoramaResult, WorkerMessage } from './protocol';
+import type { ComputeRequest, PanoramaResult, Peak, WorkerMessage } from './protocol';
 import { renderOverview, renderView, type PlacedLabel } from './render';
 
 interface Preset {
@@ -31,13 +32,44 @@ const hiddenIn = $<HTMLInputElement>('hidden');
 const statusEl = $<HTMLDivElement>('status');
 const view = $<HTMLCanvasElement>('view');
 const overview = $<HTMLCanvasElement>('overview');
+const sensorBtn = $<HTMLButtonElement>('sensor');
+const alignBar = $<HTMLDivElement>('align');
+const alignText = $<HTMLSpanElement>('align-text');
+const alignApply = $<HTMLButtonElement>('align-apply');
+const sensorInfo = $<HTMLDivElement>('sensor-info');
+const sensorText = $<HTMLSpanElement>('sensor-text');
 const viewCtx = view.getContext('2d')!;
 const overCtx = overview.getContext('2d')!;
 
-const cam: Camera = { heading: 180, pitch: 2, hfov: 60, width: 0, height: 0 };
+const cam: Camera = { heading: 180, pitch: 2, roll: 0, hfov: 60, width: 0, height: 0 };
 let pano: PanoramaResult | null = null;
 let labels: PlacedLabel[] = [];
 let busy = false;
+let selected: Peak | null = null;
+
+// Sensormodus: Blick folgt dem Gerät; Ziehen/Anpeilen korrigiert den Kompass
+const tracker = new OrientationTracker(() => requestRender());
+let sensorOn = false;
+const OFFSET_KEY = 'ridge-lens-offset';
+const offset = loadOffset();
+
+function loadOffset(): { heading: number; pitch: number } {
+  try {
+    const o = JSON.parse(localStorage.getItem(OFFSET_KEY) ?? '');
+    if (Number.isFinite(o.heading) && Number.isFinite(o.pitch)) return o;
+  } catch {
+    /* kein gespeicherter Offset */
+  }
+  return { heading: 0, pitch: 0 };
+}
+
+function saveOffset() {
+  try {
+    localStorage.setItem(OFFSET_KEY, JSON.stringify(offset));
+  } catch {
+    /* privater Modus o. ä. */
+  }
+}
 
 for (const [i, p] of PRESETS.entries()) presetSel.add(new Option(p.name, String(i)));
 
@@ -76,9 +108,14 @@ function requestRender() {
 
 function render() {
   frame = 0;
+  syncSensor();
   const dpr = devicePixelRatio || 1;
   viewCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  labels = renderView(viewCtx, cam, pano, { showHidden: hiddenIn.checked });
+  labels = renderView(viewCtx, cam, pano, {
+    showHidden: hiddenIn.checked,
+    crosshair: sensorOn,
+    selectedPeakId: selected?.id ?? null,
+  });
   const ow = overview.clientWidth;
   overCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   renderOverview(overCtx, ow, overview.clientHeight, cam, pano);
@@ -111,10 +148,13 @@ worker.onmessage = (ev: MessageEvent<WorkerMessage>) => {
     return;
   }
   pano = msg.result;
+  selected = null;
+  updateAlignBar();
   const visible = pano.peaks.filter((p) => p.visible).length;
   statusEl.textContent =
     `Augenhöhe ${Math.round(pano.h0)} m (DEM ${Math.round(pano.demElevation)} m) · ` +
     `${visible}/${pano.peaks.length} Gipfel sichtbar · ${(pano.millis / 1000).toFixed(1)} s` +
+    (pano.failedTiles ? ` · ${pano.failedTiles} Höhenkacheln fehlen` : '') +
     (pano.peakError ? ` · ${pano.peakError}` : '');
   requestRender();
 };
@@ -182,12 +222,26 @@ function clampFov(f: number) {
   return Math.min(100, Math.max(5, f));
 }
 
+/** Blick drehen/neigen; im Sensormodus wird stattdessen die Korrektur verschoben. */
+function rotateBy(dHeading: number, dPitch: number) {
+  if (sensorOn) {
+    offset.heading = deltaDeg(offset.heading + dHeading, 0);
+    offset.pitch = Math.max(-20, Math.min(20, offset.pitch + dPitch));
+    saveOffset();
+  } else {
+    cam.heading = normalizeDeg(cam.heading + dHeading);
+    cam.pitch = Math.max(-30, Math.min(30, cam.pitch + dPitch));
+  }
+}
+
 const pointers = new Map<number, { x: number; y: number }>();
 let pinchDist = 0;
+let downAt: { x: number; y: number; moved: boolean } | null = null;
 
 view.addEventListener('pointerdown', (e) => {
   view.setPointerCapture(e.pointerId);
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  downAt = pointers.size === 1 ? { x: e.clientX, y: e.clientY, moved: false } : null;
   view.style.cursor = 'grabbing';
 });
 view.addEventListener('pointermove', (e) => {
@@ -203,14 +257,17 @@ view.addEventListener('pointermove', (e) => {
     if (pinchDist) cam.hfov = clampFov((cam.hfov * pinchDist) / d);
     pinchDist = d;
   } else {
+    if (downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 6) downAt.moved = true;
+    if (downAt && !downAt.moved) return;
     const k = cam.hfov / cam.width;
-    cam.heading = normalizeDeg(cam.heading - (e.clientX - prev.x) * k);
-    cam.pitch = Math.max(-30, Math.min(30, cam.pitch + (e.clientY - prev.y) * k));
+    rotateBy(-(e.clientX - prev.x) * k, (e.clientY - prev.y) * k);
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   }
   requestRender();
 });
 const endPointer = (e: PointerEvent) => {
+  if (e.type === 'pointerup' && downAt && !downAt.moved && pointers.size === 1) selectAt(e);
+  downAt = null;
   pointers.delete(e.pointerId);
   pinchDist = 0;
   view.style.cursor = 'grab';
@@ -232,11 +289,11 @@ view.addEventListener(
 
 window.addEventListener('keydown', (e) => {
   if (e.target instanceof HTMLInputElement) return;
-  const step = e.shiftKey ? 10 : 1;
-  if (e.key === 'ArrowLeft') cam.heading = normalizeDeg(cam.heading - step);
-  else if (e.key === 'ArrowRight') cam.heading = normalizeDeg(cam.heading + step);
-  else if (e.key === 'ArrowUp') cam.pitch = Math.min(30, cam.pitch + step * 0.5);
-  else if (e.key === 'ArrowDown') cam.pitch = Math.max(-30, cam.pitch - step * 0.5);
+  const step = e.shiftKey ? 10 : sensorOn ? 0.2 : 1;
+  if (e.key === 'ArrowLeft') rotateBy(-step, 0);
+  else if (e.key === 'ArrowRight') rotateBy(step, 0);
+  else if (e.key === 'ArrowUp') rotateBy(0, step * 0.5);
+  else if (e.key === 'ArrowDown') rotateBy(0, -step * 0.5);
   else if (e.key === '+') cam.hfov = clampFov(cam.hfov / 1.2);
   else if (e.key === '-') cam.hfov = clampFov(cam.hfov * 1.2);
   else return;
@@ -245,23 +302,132 @@ window.addEventListener('keydown', (e) => {
 });
 
 overview.addEventListener('click', (e) => {
+  if (sensorOn) return;
   const r = overview.getBoundingClientRect();
   cam.heading = normalizeDeg(((e.clientX - r.left) / r.width) * 360);
   requestRender();
   writeHash();
 });
 
+function labelAt(e: PointerEvent, tolerance: number): PlacedLabel | undefined {
+  const x = e.clientX - view.getBoundingClientRect().left;
+  let best: PlacedLabel | undefined;
+  for (const l of labels) {
+    if (Math.abs(l.x - x) < tolerance && (!best || Math.abs(l.x - x) < Math.abs(best.x - x))) best = l;
+  }
+  return best;
+}
+
+function peakDetails(p: Peak): string {
+  return (
+    `${Math.round(p.ele)} m${p.eleFromOsm ? '' : ' (DEM)'} · ${(p.dist / 1000).toFixed(1)} km · ` +
+    `Azimut ${p.az.toFixed(1)}° · Höhenwinkel ${p.angle.toFixed(2)}°${p.visible ? '' : ' · verdeckt'}`
+  );
+}
+
 /** Tooltip mit Details zum nächsten Gipfel-Label. */
 function updateHover(e: PointerEvent) {
-  const r = view.getBoundingClientRect();
-  const x = e.clientX - r.left;
-  const hit = labels.find((l) => Math.abs(l.x - x) < 7);
-  view.title = hit
-    ? `${hit.peak.name}\n${Math.round(hit.peak.ele)} m${hit.peak.eleFromOsm ? '' : ' (DEM)'} · ` +
-      `${(hit.peak.dist / 1000).toFixed(1)} km · Azimut ${hit.peak.az.toFixed(1)}° · ` +
-      `Höhenwinkel ${hit.peak.angle.toFixed(2)}°${hit.peak.visible ? '' : ' · verdeckt'}`
-    : '';
+  const hit = labelAt(e, 7);
+  view.title = hit ? `${hit.peak.name}\n${peakDetails(hit.peak)}` : '';
 }
+
+/** Antippen eines Labels wählt den Gipfel (für Anpeilen/Zentrieren). */
+function selectAt(e: PointerEvent) {
+  const hit = labelAt(e, 14);
+  selected = hit && hit.peak.id !== selected?.id ? hit.peak : null;
+  updateAlignBar();
+  requestRender();
+}
+
+function updateAlignBar() {
+  alignBar.hidden = !selected;
+  if (!selected) return;
+  alignText.textContent = sensorOn
+    ? `${selected.name}: Fadenkreuz auf den echten Gipfel richten, dann übernehmen.`
+    : `${selected.name} · ${peakDetails(selected)}`;
+  alignApply.textContent = sensorOn ? 'Übernehmen' : 'Zentrieren';
+}
+
+alignApply.addEventListener('click', () => {
+  if (!selected) return;
+  const a = tracker.angles;
+  if (sensorOn && a) {
+    // Korrektur so, dass der Gipfel genau im Fadenkreuz liegt
+    offset.heading = deltaDeg(selected.az, a.heading);
+    offset.pitch = Math.max(-20, Math.min(20, selected.angle - a.pitch));
+    saveOffset();
+    statusEl.textContent = `Kompass auf ${selected.name} ausgerichtet (Korrektur ${fmtSigned(offset.heading)}°).`;
+  } else if (!sensorOn) {
+    cam.heading = selected.az;
+    cam.pitch = Math.max(-30, Math.min(30, selected.angle));
+    writeHash();
+  }
+  selected = null;
+  updateAlignBar();
+  requestRender();
+});
+$<HTMLButtonElement>('align-close').addEventListener('click', () => {
+  selected = null;
+  updateAlignBar();
+  requestRender();
+});
+
+// --- Sensormodus -------------------------------------------------------------------
+
+function fmtSigned(v: number, digits = 1): string {
+  return `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(digits)}`;
+}
+
+/** Übernimmt Sensorwerte + Korrektur in die Kamera. */
+function syncSensor() {
+  const a = sensorOn ? tracker.angles : null;
+  if (!a) {
+    cam.roll = 0;
+    return;
+  }
+  cam.heading = normalizeDeg(a.heading + offset.heading);
+  cam.pitch = a.pitch + offset.pitch;
+  cam.roll = a.roll;
+  sensorText.textContent =
+    `Kurs ${cam.heading.toFixed(1)}° · Neigung ${cam.pitch.toFixed(1)}° · Rolle ${cam.roll.toFixed(0)}° · ` +
+    `Korrektur ${fmtSigned(offset.heading)}° / ${fmtSigned(offset.pitch)}°` +
+    (tracker.status === 'relative' ? ' · kein Kompass, per Gipfel ausrichten' : '');
+}
+
+let sensorTimeout = 0;
+sensorBtn.addEventListener('click', async () => {
+  if (sensorOn) {
+    tracker.stop();
+    sensorOn = false;
+    cam.pitch = Math.max(-30, Math.min(30, cam.pitch));
+  } else {
+    try {
+      await tracker.start();
+    } catch (err) {
+      statusEl.textContent = err instanceof Error ? err.message : String(err);
+      return;
+    }
+    sensorOn = true;
+    sensorText.textContent = 'Warte auf Sensordaten …';
+    clearTimeout(sensorTimeout);
+    sensorTimeout = window.setTimeout(() => {
+      if (sensorOn && !tracker.angles) sensorText.textContent = 'Keine Orientierungsdaten – Gerät ohne Sensor oder keine HTTPS-Verbindung.';
+    }, 3000);
+  }
+  sensorBtn.classList.toggle('active', sensorOn);
+  sensorBtn.setAttribute('aria-pressed', String(sensorOn));
+  sensorInfo.hidden = !sensorOn;
+  document.body.classList.toggle('sensor-on', sensorOn);
+  updateAlignBar();
+  requestRender();
+});
+
+$<HTMLButtonElement>('offset-reset').addEventListener('click', () => {
+  offset.heading = 0;
+  offset.pitch = 0;
+  saveOffset();
+  requestRender();
+});
 
 window.addEventListener('hashchange', () => {
   if (readHash()) {
