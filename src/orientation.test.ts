@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deviceVectors, rotationMatrix, viewAngles } from './orientation';
+import { deviceVectors, OrientationSmoother, rotationMatrix, viewAngles } from './orientation';
 
 const angles = (a: number, b: number, g: number, screen = 0) => {
   const { f, r } = deviceVectors(a, b, g, screen);
@@ -68,5 +68,30 @@ describe('orientation round trip', () => {
     expect(v.heading).toBeCloseTo(213, 4);
     expect(v.pitch).toBeCloseTo(0.5, 4);
     expect(v.roll).toBeCloseTo(-8, 4);
+  });
+});
+
+describe('OrientationSmoother', () => {
+  const dir = (deg: number): [number, number, number] => [Math.sin((deg * Math.PI) / 180), Math.cos((deg * Math.PI) / 180), 0];
+  const right = (deg: number): [number, number, number] => [Math.cos((deg * Math.PI) / 180), -Math.sin((deg * Math.PI) / 180), 0];
+  const heading = (f: number[]) => ((Math.atan2(f[0], f[1]) * 180) / Math.PI + 360) % 360;
+
+  it('damps ±1.5° jitter at 60 Hz to a fraction', () => {
+    const s = new OrientationSmoother();
+    let maxDev = 0;
+    for (let i = 0; i < 600; i++) {
+      const noisy = 100 + (i % 2 ? 1.5 : -1.5);
+      const [f] = s.update(dir(noisy), right(noisy), i * 16.7);
+      if (i > 120) maxDev = Math.max(maxDev, Math.abs(heading(f) - 100));
+    }
+    expect(maxDev).toBeLessThan(0.3);
+  });
+
+  it('follows a 40° turn within ~0.3 s', () => {
+    const s = new OrientationSmoother();
+    for (let i = 0; i < 60; i++) s.update(dir(0), right(0), i * 16.7);
+    let f = dir(0);
+    for (let i = 60; i < 78; i++) [f] = s.update(dir(40), right(40), i * 16.7);
+    expect(heading(f)).toBeGreaterThan(38);
   });
 });

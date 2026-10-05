@@ -1,3 +1,5 @@
+import type { Key, Lang } from './i18n';
+
 export interface ComputeRequest {
   lat: number;
   lon: number;
@@ -11,7 +13,10 @@ export interface ComputeRequest {
 
 export interface Peak {
   id: number;
+  /** Ortsüblicher Name (OSM `name`). */
   name: string;
+  /** Übersetzte Namen (OSM `name:xx`), falls vorhanden. */
+  names: Partial<Record<Lang, string>>;
   lat: number;
   lon: number;
   ele: number;
@@ -34,6 +39,7 @@ export interface PanoramaResult {
   linePoints: Float32Array;
   lineOffsets: Uint32Array;
   peaks: Peak[];
+  /** Technische Fehlerdetails der Gipfelabfrage (Server, HTTP-Status), sprachneutral. */
   peakError: string | null;
   /** Nicht geladene Höhenkacheln (Lücken im Panorama). */
   failedTiles: number;
@@ -41,6 +47,6 @@ export interface PanoramaResult {
 }
 
 export type WorkerMessage =
-  | { type: 'progress'; text: string }
+  | { type: 'progress'; key: Key; params?: Record<string, number> }
   | { type: 'result'; result: PanoramaResult }
-  | { type: 'error'; message: string };
+  | { type: 'error'; key: Key; detail?: string };

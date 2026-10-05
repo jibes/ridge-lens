@@ -281,6 +281,9 @@ input[type='checkbox'] {
   height: 18px;
   accent-color: var(--accent);
 }
+label.lang {
+  margin-top: 12px;
+}
 .row {
   display: flex;
   flex-wrap: wrap;

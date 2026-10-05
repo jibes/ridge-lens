@@ -22,6 +22,10 @@ Beim Öffnen: Bildschirm bleibt an (Screen Wake Lock), Standort per GPS, auf Tou
 
 Vollbild-Panorama, unten zwei Knöpfe: Einstellungen (Ort, Koordinaten, Höhe, Sichtweite, Kompass-Korrektur, Installieren) und Standort neu bestimmen. Farben folgen dem Hell-/Dunkelmodus des Systems. Ohne Sensor: ziehen, Pinch/Mausrad, 360°-Übersicht antippen.
 
+## Sprachen
+
+Deutsch, Englisch, Französisch, Italienisch – automatisch nach Systemsprache (sonst Englisch), umstellbar in den Einstellungen. Gipfelnamen erscheinen in der gewählten Sprache, falls OSM sie führt (`name:xx`), sonst ortsüblich. Texte in `src/i18n.ts`; der Worker meldet nur Schlüssel.
+
 ## App installieren
 
 Android (Chrome/Brave): Knopf „Installieren“ oder Browsermenü → „Zum Startbildschirm hinzufügen“. iOS (Safari): Teilen → „Zum Home-Bildschirm“.
@@ -38,7 +42,7 @@ Kompass korrigieren:
 
 Die Korrektur bleibt im Browser gespeichert. Sie enthält auch die magnetische Missweisung (Alpen ≈ +3°), die Handy-Kompasse nicht abziehen.
 
-Technik (`src/orientation.ts`): Rotationsmatrix aus α/β/γ (W3C), Blickachse = −z des Geräts, Rolle relativ zum Horizont, Bildschirmdrehung (Querformat) berücksichtigt. Android: `deviceorientationabsolute`; iOS: relatives α plus `webkitCompassHeading` als geglätteter Nordbezug. Glättung auf Richtungsvektoren statt Winkeln (kein 0°/360°-Sprung).
+Technik (`src/orientation.ts`): Rotationsmatrix aus α/β/γ (W3C), Blickachse = −z des Geräts, Rolle relativ zum Horizont, Bildschirmdrehung (Querformat) berücksichtigt. Android: `deviceorientationabsolute`; iOS: relatives α plus `webkitCompassHeading` als geglätteter Nordbezug. Adaptiver, zeitbasierter Tiefpass (Prinzip One-Euro-Filter) auf Richtungsvektoren statt Winkeln: in Ruhe ≈ 0,4 s Zeitkonstante gegen Kompasszittern, bei schnellen Schwenks kaum Verzögerung; kein 0°/360°-Sprung.
 
 ## Funktionsweise
 

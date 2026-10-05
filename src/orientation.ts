@@ -87,7 +87,9 @@ export class OrientationTracker {
   private handler = (e: Event) => this.onEvent(e as WebkitOrientationEvent);
   status: OrientationStatus | null = null;
 
-  constructor(private onChange: () => void, private smoothing = 0.25) {}
+  private smoother = new OrientationSmoother();
+
+  constructor(private onChange: () => void) {}
 
   /** Hängt die Listener an; Daten kommen auf Android/Desktop ohne weitere Erlaubnis. */
   start(): void {
@@ -115,7 +117,7 @@ export class OrientationTracker {
     let alpha = e.alpha;
     if (e.type === 'deviceorientationabsolute' || e.absolute) {
       // Wechsel von relativ auf absolut: alte Glättung verwerfen
-      if (this.status === 'relative') this.f = this.r = null;
+      if (this.status === 'relative') this.smoother.reset();
       this.lastAbsolute = e.timeStamp;
       this.status = 'absolute';
     } else {
@@ -137,15 +139,57 @@ export class OrientationTracker {
     }
     const angle = screen.orientation?.angle ?? (window as unknown as { orientation?: number }).orientation ?? 0;
     const v = deviceVectors(alpha, e.beta, e.gamma, angle);
-    this.f = blend(this.f, v.f, this.smoothing);
-    this.r = blend(this.r, v.r, this.smoothing);
+    [this.f, this.r] = this.smoother.update(v.f, v.r, e.timeStamp);
     this.onChange();
   }
 }
 
-/** Exponentielle Glättung auf Einheitsvektoren (kein Problem mit 0/360-Sprung). */
-function blend(prev: Vec3 | null, next: Vec3, k: number): Vec3 {
-  if (!prev) return next;
+/** Grenzfrequenz in Ruhe (Hz): starke Glättung gegen Zittern des Magnetometers. */
+const FC_MIN = 0.4;
+/** Zusätzliche Grenzfrequenz je Grad Abweichung (Hz/°): schnelle Schwenks folgen ohne Verzögerung. */
+const FC_PER_DEG = 0.25;
+
+/**
+ * Adaptiver Tiefpass (Prinzip One-Euro-Filter) auf Blickachse und Bildkante.
+ * Zeitbasiert, daher unabhängig von der Eventrate; arbeitet auf Einheitsvektoren
+ * (kein 0°/360°-Sprung). Grenzfrequenz steigt mit der Abweichung zwischen
+ * Messung und geglättetem Wert: kleines Rauschen wird stark gedämpft, echte
+ * Drehungen kaum verzögert.
+ */
+export class OrientationSmoother {
+  private f: Vec3 | null = null;
+  private r: Vec3 | null = null;
+  private t = 0;
+
+  reset(): void {
+    this.f = this.r = null;
+  }
+
+  update(f: Vec3, r: Vec3, timeMs: number): [Vec3, Vec3] {
+    if (!this.f || !this.r) {
+      this.f = f;
+      this.r = r;
+      this.t = timeMs;
+      return [f, r];
+    }
+    const dt = Math.min(0.2, Math.max(0, (timeMs - this.t) / 1000));
+    this.t = timeMs;
+    const dev = Math.max(angleBetween(this.f, f), angleBetween(this.r, r));
+    const fc = FC_MIN + FC_PER_DEG * dev;
+    const alpha = 1 - Math.exp(-dt * 2 * Math.PI * fc);
+    this.f = blend(this.f, f, alpha);
+    this.r = blend(this.r, r, alpha);
+    return [this.f, this.r];
+  }
+}
+
+function angleBetween(a: Vec3, b: Vec3): number {
+  const d = Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]));
+  return Math.acos(d) * DEG;
+}
+
+/** Lineare Mischung zweier Einheitsvektoren, normiert. */
+function blend(prev: Vec3, next: Vec3, k: number): Vec3 {
   const v: Vec3 = [prev[0] + (next[0] - prev[0]) * k, prev[1] + (next[1] - prev[1]) * k, prev[2] + (next[2] - prev[2]) * k];
   const n = Math.hypot(v[0], v[1], v[2]) || 1;
   return [v[0] / n, v[1] / n, v[2] / n];

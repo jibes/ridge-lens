@@ -2,6 +2,7 @@ import { deltaDeg, normalizeDeg } from './geo';
 import { OrientationTracker } from './orientation';
 import type { Camera } from './projection';
 import type { ComputeRequest, PanoramaResult, Peak, WorkerMessage } from './protocol';
+import { applyDom, compassLabels, detectLang, lang, setLang, storedLangChoice, storeLangChoice, t, type Lang } from './i18n';
 import { DARK, LIGHT, renderOverview, renderView, type PlacedLabel } from './render';
 
 interface Preset {
@@ -31,19 +32,28 @@ const presetSel = $<HTMLSelectElement>('preset');
 const hiddenIn = $<HTMLInputElement>('hidden');
 const statusEl = $<HTMLDivElement>('status');
 
-/** Statuszeile = aktueller Zustand + dauerhafte Hinweise (GPS, Sensor). */
-let baseStatus = '';
-const notices = new Map<string, string>();
-function setStatus(text: string) {
+/**
+ * Statuszeile = aktueller Zustand + dauerhafte Hinweise (GPS, Sensor).
+ * Texte als Funktionen, damit ein Sprachwechsel sie neu formuliert.
+ */
+type Text = () => string;
+let baseStatus: Text = () => '';
+const notices = new Map<string, Text>();
+function setStatus(text: Text) {
   baseStatus = text;
-  statusEl.textContent = [baseStatus, ...notices.values()].filter(Boolean).join(' · ');
+  statusEl.textContent = [baseStatus(), ...[...notices.values()].map((n) => n())].filter(Boolean).join(' · ');
   // Hinweise dürfen umbrechen, normale Statusmeldungen bleiben einzeilig
   statusEl.classList.toggle('wrap', notices.size > 0);
 }
-function setNotice(key: string, text: string | null) {
+function setNotice(key: string, text: Text | null) {
   if (text) notices.set(key, text);
   else notices.delete(key);
   setStatus(baseStatus);
+}
+
+/** Anzeigename eines Gipfels in der gewählten Sprache, sonst ortsüblich. */
+function peakName(p: Peak): string {
+  return p.names[lang()] ?? p.name;
 }
 const view = $<HTMLCanvasElement>('view');
 const overview = $<HTMLCanvasElement>('overview');
@@ -139,12 +149,14 @@ function render() {
     showHidden: hiddenIn.checked,
     crosshair: sensorOn,
     selectedPeakId: selected?.id ?? null,
+    peakName,
+    compass: compassLabels(8),
     // Skala und Labels unterhalb der Statuszeile beginnen
     topInset: statusEl.getBoundingClientRect().bottom - view.getBoundingClientRect().top,
   });
   if (overview.clientWidth) {
     overCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    renderOverview(overCtx, overview.clientWidth, overview.clientHeight, cam, pano, palette);
+    renderOverview(overCtx, overview.clientWidth, overview.clientHeight, cam, pano, palette, compassLabels(8));
   }
 }
 
@@ -171,22 +183,27 @@ const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'modu
 worker.onmessage = (ev: MessageEvent<WorkerMessage>) => {
   const msg = ev.data;
   if (msg.type === 'progress') {
-    setStatus(msg.text);
+    setStatus(() => t(msg.key, msg.params));
     return;
   }
   busy = false;
   if (msg.type === 'error') {
-    setStatus(`Fehler: ${msg.message}`);
+    setStatus(() => (msg.detail ? t('status.error', { msg: msg.detail }) : t(msg.key)));
     return;
   }
-  pano = msg.result;
+  const result = msg.result;
+  pano = result;
   selected = null;
   updateAlignBar();
-  const visible = pano.peaks.filter((p) => p.visible).length;
-  setStatus(
-    `${Math.round(pano.h0)} m ü. M. · ${visible} Gipfel sichtbar` +
-      (pano.failedTiles ? ` · ${pano.failedTiles} Höhenkacheln fehlen` : '') +
-      (pano.peakError ? ` · ${pano.peakError}` : ''),
+  const visible = result.peaks.filter((p) => p.visible).length;
+  setStatus(() =>
+    [
+      t('status.result', { ele: Math.round(result.h0), count: visible }),
+      result.failedTiles ? t('status.tilesMissing', { n: result.failedTiles }) : '',
+      result.peakError ? t('error.peaks', { detail: result.peakError }) : '',
+    ]
+      .filter(Boolean)
+      .join(' · '),
   );
   requestRender();
 };
@@ -196,7 +213,7 @@ function compute() {
   const lat = Number(latIn.value);
   const lon = Number(lonIn.value);
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 85) {
-    setStatus('Ungültige Koordinaten');
+    setStatus(() => t('status.invalidCoords'));
     return;
   }
   const req: ComputeRequest = {
@@ -207,7 +224,7 @@ function compute() {
     groundElevation: eleIn.value ? Number(eleIn.value) : null,
   };
   busy = true;
-  setStatus('Starte …');
+  setStatus(() => t('status.start'));
   writeHash();
   worker.postMessage(req);
 }
@@ -243,9 +260,9 @@ for (const el of [latIn, lonIn, eleIn]) el.addEventListener('input', () => (pres
 hiddenIn.addEventListener('change', requestRender);
 
 /** Standort per GPS in die Eingabefelder; liefert Fehlertext oder null. */
-function locate(): Promise<string | null> {
-  if (!navigator.geolocation) return Promise.resolve('kein GPS verfügbar');
-  setStatus('Bestimme Standort …');
+function locate(): Promise<Text | null> {
+  if (!navigator.geolocation) return Promise.resolve(() => t('gps.unavailable'));
+  setStatus(() => t('status.locating'));
   return new Promise((resolve) =>
     navigator.geolocation.getCurrentPosition(
       (pos) => {
@@ -256,7 +273,7 @@ function locate(): Promise<string | null> {
         presetSel.value = '';
         resolve(null);
       },
-      (err) => resolve(err.code === err.PERMISSION_DENIED ? 'Standortzugriff verweigert' : err.message || 'GPS-Fehler'),
+      (err) => resolve(err.code === err.PERMISSION_DENIED ? () => t('gps.denied') : () => err.message || t('gps.error')),
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 },
     ),
   );
@@ -264,7 +281,7 @@ function locate(): Promise<string | null> {
 
 $<HTMLButtonElement>('gps').addEventListener('click', async () => {
   const err = await locate();
-  setNotice('gps', err && `GPS: ${err}`);
+  setNotice('gps', err && (() => `GPS: ${err()}`));
   if (!err) compute();
 });
 
@@ -372,15 +389,16 @@ function labelAt(e: PointerEvent, tolerance: number): PlacedLabel | undefined {
 
 function peakDetails(p: Peak): string {
   return (
-    `${Math.round(p.ele)} m${p.eleFromOsm ? '' : ' (DEM)'} · ${(p.dist / 1000).toFixed(1)} km · ` +
-    `Azimut ${p.az.toFixed(1)}° · Höhenwinkel ${p.angle.toFixed(2)}°${p.visible ? '' : ' · verdeckt'}`
+    `${Math.round(p.ele)} m${p.eleFromOsm ? '' : ` (${t('peak.dem')})`} · ${(p.dist / 1000).toFixed(1)} km · ` +
+    `${t('peak.azimuth')} ${p.az.toFixed(1)}° · ${t('peak.elevationAngle')} ${p.angle.toFixed(2)}°` +
+    (p.visible ? '' : ` · ${t('peak.hidden')}`)
   );
 }
 
 /** Tooltip mit Details zum nächsten Gipfel-Label. */
 function updateHover(e: PointerEvent) {
   const hit = labelAt(e, 7);
-  view.title = hit ? `${hit.peak.name}\n${peakDetails(hit.peak)}` : '';
+  view.title = hit ? `${peakName(hit.peak)}\n${peakDetails(hit.peak)}` : '';
 }
 
 /** Antippen eines Labels wählt den Gipfel (für Anpeilen/Zentrieren). */
@@ -395,9 +413,9 @@ function updateAlignBar() {
   alignBar.hidden = !selected;
   if (!selected) return;
   alignText.textContent = sensorOn
-    ? `${selected.name}: Fadenkreuz auf den echten Gipfel richten, dann übernehmen.`
-    : `${selected.name} · ${peakDetails(selected)}`;
-  alignApply.textContent = sensorOn ? 'Übernehmen' : 'Zentrieren';
+    ? t('align.instruction', { name: peakName(selected) })
+    : `${peakName(selected)} · ${peakDetails(selected)}`;
+  alignApply.textContent = t(sensorOn ? 'align.apply' : 'align.center');
 }
 
 alignApply.addEventListener('click', () => {
@@ -408,7 +426,9 @@ alignApply.addEventListener('click', () => {
     offset.heading = deltaDeg(selected.az, a.heading);
     offset.pitch = Math.max(-20, Math.min(20, selected.angle - a.pitch));
     saveOffset();
-    setStatus(`Kompass auf ${selected.name} ausgerichtet (Korrektur ${fmtSigned(offset.heading)}°).`);
+    const peak = selected;
+    const correction = fmtSigned(offset.heading);
+    setStatus(() => t('align.done', { name: peakName(peak), offset: correction }));
   } else if (!sensorOn) {
     cam.heading = selected.az;
     cam.pitch = Math.max(-30, Math.min(30, selected.angle));
@@ -426,8 +446,6 @@ $<HTMLButtonElement>('align-close').addEventListener('click', () => {
 
 // --- Sensormodus -------------------------------------------------------------------
 
-const COMPASS_16 = ['N', 'NNO', 'NO', 'ONO', 'O', 'OSO', 'SO', 'SSO', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
-
 function fmtSigned(v: number, digits = 1): string {
   return `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(digits)}`;
 }
@@ -442,12 +460,12 @@ function syncSensor() {
   cam.heading = normalizeDeg(a.heading + offset.heading);
   cam.pitch = a.pitch + offset.pitch;
   cam.roll = a.roll;
-  const dir = COMPASS_16[Math.round(cam.heading / 22.5) % 16];
+  const dir = compassLabels(16)[Math.round(cam.heading / 22.5) % 16];
   const corrected = Math.abs(offset.heading) >= 0.05 || Math.abs(offset.pitch) >= 0.05;
   sensorText.textContent =
     `${dir} ${cam.heading.toFixed(0)}°` +
-    (corrected ? ` · korrigiert ${fmtSigned(offset.heading)}°` : '') +
-    (tracker.status === 'relative' ? ' · kein Kompass – Gipfel antippen zum Ausrichten' : '');
+    (corrected ? ` · ${t('sensor.corrected', { offset: fmtSigned(offset.heading) })}` : '') +
+    (tracker.status === 'relative' ? ` · ${t('sensor.noCompass')}` : '');
 }
 
 /** Sensormodus ist an, sobald Orientierungsdaten kommen; vorher und ohne Sensor: manuell. */
@@ -466,7 +484,7 @@ function startSensors() {
     if (OrientationTracker.needsPermission) {
       document.addEventListener('pointerup', () => void tracker.requestPermission(), { once: true });
     }
-    if ('brave' in navigator) setNotice('sensor', 'Brave blockiert Bewegungssensoren – Blick per Ziehen steuern');
+    if ('brave' in navigator) setNotice('sensor', () => t('sensor.brave'));
   }, 3000);
 }
 
@@ -525,7 +543,31 @@ installBtn.addEventListener('click', async () => {
 });
 window.addEventListener('appinstalled', () => (installBtn.hidden = true));
 
+// --- Sprache ----------------------------------------------------------------------
+
+const langSel = $<HTMLSelectElement>('lang');
+function applyLang(choice: Lang | 'auto') {
+  setLang(choice === 'auto' ? detectLang() : choice);
+  langSel.value = choice;
+  applyDom();
+  setStatus(baseStatus);
+  updateAlignBar();
+  requestRender();
+}
+langSel.addEventListener('change', () => {
+  const choice = langSel.value as Lang | 'auto';
+  storeLangChoice(choice);
+  applyLang(choice);
+});
+// Systemsprache kann sich ändern, solange "automatisch" gewählt ist
+window.addEventListener('languagechange', () => {
+  if (storedLangChoice() === 'auto') applyLang('auto');
+});
+
 // --- Start ------------------------------------------------------------------------
+
+applyLang(storedLangChoice());
+setStatus(() => t('status.ready'));
 
 // Ort aus URL bzw. Vorgabe als Rückfall; standardmäßig GPS und Sensoren
 const fromHash = readHash();
@@ -537,6 +579,6 @@ resize();
 // Sensoren nur auf Touch-Geräten; Desktop hat keine Lagesensoren
 if (matchMedia('(pointer: coarse)').matches) startSensors();
 void locate().then((err) => {
-  if (err) setNotice('gps', `GPS: ${err} – zeige ${fromHash ? 'Ort aus Link' : PRESETS[0].name}`);
+  if (err) setNotice('gps', () => t('gps.fallback', { err: err(), place: fromHash ? t('gps.placeFromLink') : PRESETS[0].name }));
   compute();
 });

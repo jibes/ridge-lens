@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="de">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -17,61 +17,67 @@
   </head>
   <body>
     <main id="stage">
-      <canvas id="view" aria-label="Bergpanorama"></canvas>
-      <canvas id="overview" aria-label="360°-Übersicht, antippen zum Drehen"></canvas>
+      <canvas id="view" data-i18n-aria="aria.view"></canvas>
+      <canvas id="overview" data-i18n-aria="aria.overview"></canvas>
 
-      <div id="status" class="pill" role="status" aria-live="polite">Bereit</div>
+      <div id="status" class="pill" role="status" aria-live="polite"></div>
 
       <div id="align" class="toast" hidden>
         <span id="align-text"></span>
-        <button type="button" id="align-apply" class="primary">Übernehmen</button>
-        <button type="button" id="align-close" class="icon-btn small" aria-label="Schließen">
+        <button type="button" id="align-apply" class="primary"></button>
+        <button type="button" id="align-close" class="icon-btn small" data-i18n-aria="aria.close">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
         </button>
       </div>
 
       <div id="sensor-info" class="readout" hidden><span id="sensor-text"></span></div>
 
-      <nav class="dock" aria-label="Steuerung">
-        <button type="button" id="menu" class="icon-btn" aria-label="Einstellungen" aria-expanded="false" aria-controls="panel">
+      <nav class="dock" data-i18n-aria="aria.controls">
+        <button type="button" id="menu" class="icon-btn" data-i18n-aria="aria.settings" aria-expanded="false" aria-controls="panel">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></svg>
         </button>
-        <button type="button" id="gps" class="icon-btn" aria-label="Standort neu bestimmen">
+        <button type="button" id="gps" class="icon-btn" data-i18n-aria="aria.locate">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.5" class="fill" /><circle cx="12" cy="12" r="7.5" /><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22" /></svg>
         </button>
       </nav>
 
-      <section id="panel" class="sheet" hidden aria-label="Einstellungen">
+      <section id="panel" class="sheet" hidden data-i18n-aria="aria.settings">
         <div class="sheet-head">
-          <h2>Einstellungen</h2>
-          <button type="button" id="panel-close" class="icon-btn small" aria-label="Schließen">
+          <h2 data-i18n="settings.title"></h2>
+          <button type="button" id="panel-close" class="icon-btn small" data-i18n-aria="aria.close">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
           </button>
         </div>
         <form id="form">
-          <label class="wide">Ort
+          <label class="wide"><span data-i18n="settings.place"></span>
             <select id="preset">
-              <option value="">Eigener Standort</option>
+              <option value="" data-i18n="settings.ownPlace"></option>
             </select>
           </label>
-          <label>Breite <input id="lat" type="number" step="any" inputmode="decimal" required /></label>
-          <label>Länge <input id="lon" type="number" step="any" inputmode="decimal" required /></label>
-          <label>Höhe (m) <input id="ele" type="number" step="any" inputmode="numeric" placeholder="auto" /></label>
-          <label>Sichtweite (km) <input id="radius" type="number" min="10" max="250" step="10" inputmode="numeric" value="100" /></label>
-          <label class="check wide"><input id="hidden" type="checkbox" /> Verdeckte Gipfel zeigen</label>
-          <button type="submit" class="primary wide">Panorama berechnen</button>
+          <label><span data-i18n="settings.lat"></span> <input id="lat" type="number" step="any" inputmode="decimal" required /></label>
+          <label><span data-i18n="settings.lon"></span> <input id="lon" type="number" step="any" inputmode="decimal" required /></label>
+          <label><span data-i18n="settings.ele"></span> <input id="ele" type="number" step="any" inputmode="numeric" data-i18n-placeholder="auto" /></label>
+          <label><span data-i18n="settings.radius"></span> <input id="radius" type="number" min="10" max="250" step="10" inputmode="numeric" value="100" /></label>
+          <label class="check wide"><input id="hidden" type="checkbox" /> <span data-i18n="settings.hidden"></span></label>
+          <button type="submit" class="primary wide" data-i18n="settings.compute"></button>
         </form>
+        <label class="lang"><span data-i18n="settings.language"></span>
+          <select id="lang">
+            <option value="auto" data-i18n="settings.langAuto"></option>
+            <option value="de">Deutsch</option>
+            <option value="en">English</option>
+            <option value="fr">Français</option>
+            <option value="it">Italiano</option>
+          </select>
+        </label>
         <div class="row">
-          <button type="button" id="offset-reset">Kompass-Korrektur zurücksetzen</button>
-          <button type="button" id="install" hidden>App installieren</button>
+          <button type="button" id="offset-reset" data-i18n="settings.resetOffset"></button>
+          <button type="button" id="install" hidden data-i18n="settings.install"></button>
         </div>
-        <p class="help">
-          Gipfel antippen, Fadenkreuz auf den echten Gipfel richten, „Übernehmen“: korrigiert den Kompass.
-          Ohne Sensor: ziehen zum Drehen, zwei Finger zum Zoomen.
-        </p>
+        <p class="help" data-i18n="settings.help"></p>
         <p class="credits">
-          Höhendaten: <a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md" target="_blank" rel="noopener">AWS Terrain Tiles</a> ·
-          Gipfel: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>-Mitwirkende
+          <span data-i18n="credits.elevation"></span>: <a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md" target="_blank" rel="noopener">AWS Terrain Tiles</a> ·
+          <span data-i18n="credits.peaks"></span>: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener" data-i18n="credits.osm"></a>
         </p>
       </section>
     </main>

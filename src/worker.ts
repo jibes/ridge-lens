@@ -3,7 +3,15 @@ import { Dem, fetchTerrariumTile, metersPerPixel } from './dem';
 import { bearing, distance, elevationAngle, type LatLon } from './geo';
 import { castRay, extractRidges, linkRidges, observerGround, occlusionAngle, type RayOptions, type RidgePoint, type Sampler } from './panorama';
 import { fetchPeaks } from './peaks';
+import type { Key } from './i18n';
 import type { ComputeRequest, PanoramaResult, Peak, WorkerMessage } from './protocol';
+
+/** Fehler mit Übersetzungsschlüssel; der Hauptthread formuliert die Meldung. */
+class KeyedError extends Error {
+  constructor(readonly key: Key) {
+    super(key);
+  }
+}
 
 const AZ_STEP = 0.1;
 const NEAR_ZOOM = 12;
@@ -18,7 +26,8 @@ self.onmessage = async (ev: MessageEvent<ComputeRequest>) => {
     const result = await compute(ev.data);
     post({ type: 'result', result }, [result.horizon.buffer, result.linePoints.buffer, result.lineOffsets.buffer]);
   } catch (e) {
-    post({ type: 'error', message: e instanceof Error ? e.message : String(e) });
+    if (e instanceof KeyedError) post({ type: 'error', key: e.key });
+    else post({ type: 'error', key: 'status.error', detail: e instanceof Error ? e.message : String(e) });
   }
 };
 
@@ -30,16 +39,15 @@ async function compute(req: ComputeRequest): Promise<PanoramaResult> {
 
   const peaksPromise = fetchPeaks(observer, req.radius).then(
     (p) => ({ peaks: p, error: null as string | null }),
-    (e) => ({ peaks: [], error: `Gipfel nicht geladen: ${e instanceof Error ? e.message : e}` }),
+    (e) => ({ peaks: [], error: e instanceof Error ? e.message : String(e) }),
   );
 
-  const progress = (label: string) => (done: number, total: number) =>
-    post({ type: 'progress', text: `${label}: ${done}/${total} Kacheln` });
-  const nearLoad = await near.load(observer, NEAR_RADIUS, fetchTerrariumTile, progress('Höhenmodell nah'));
-  const farLoad = await far.load(observer, req.radius, fetchTerrariumTile, progress('Höhenmodell fern'));
+  const progress = (key: Key) => (done: number, total: number) => post({ type: 'progress', key, params: { done, total } });
+  const nearLoad = await near.load(observer, NEAR_RADIUS, fetchTerrariumTile, progress('progress.tilesNear'));
+  const farLoad = await far.load(observer, req.radius, fetchTerrariumTile, progress('progress.tilesFar'));
   const failed = nearLoad.failed + farLoad.failed;
   if (farLoad.total > 0 && farLoad.failed === farLoad.total) {
-    throw new Error('Höhendaten konnten nicht geladen werden (Netzwerk?)');
+    throw new KeyedError('error.noTiles');
   }
 
   const sample: Sampler = (lat, lon, d) => {
@@ -50,7 +58,7 @@ async function compute(req: ComputeRequest): Promise<PanoramaResult> {
     return far.elevation(lat, lon);
   };
 
-  post({ type: 'progress', text: 'Lade Gipfel …' });
+  post({ type: 'progress', key: 'progress.peaks' });
   const { peaks: raw, error: peakError } = await peaksPromise;
 
   const demElevation = near.elevation(req.lat, req.lon);
@@ -60,7 +68,7 @@ async function compute(req: ComputeRequest): Promise<PanoramaResult> {
     .sort((a, b) => distance(observer, a) - distance(observer, b))[0];
   const terrain = observerGround(sample, observer);
   const ground = req.groundElevation ?? (summit ? Math.max(summit.ele!, terrain) : terrain);
-  if (Number.isNaN(ground)) throw new Error('Keine Höhendaten am Standort');
+  if (Number.isNaN(ground)) throw new KeyedError('error.noElevation');
   const h0 = ground + req.eyeHeight;
 
   const nearRes = metersPerPixel(req.lat, NEAR_ZOOM);
@@ -72,7 +80,7 @@ async function compute(req: ComputeRequest): Promise<PanoramaResult> {
     step: (d) => Math.max(10, Math.min(d * 0.01, d < NEAR_RADIUS ? nearRes : farRes)),
   };
 
-  post({ type: 'progress', text: 'Berechne Bergketten …' });
+  post({ type: 'progress', key: 'progress.ridges' });
   const nBins = Math.round(360 / AZ_STEP);
   const horizon = new Float32Array(nBins);
   const bins: RidgePoint[][] = [];
@@ -97,7 +105,7 @@ async function compute(req: ComputeRequest): Promise<PanoramaResult> {
     const az = bearing(observer, p);
     const angle = elevationAngle(h0, ele, dist);
     const occ = occlusionAngle(sample, observer, h0, az, dist, rayOpts);
-    peaks.push({ id: p.id, name: p.name, lat: p.lat, lon: p.lon, ele, eleFromOsm: useOsm, dist, az, angle, visible: angle >= occ - 0.05 });
+    peaks.push({ id: p.id, name: p.name, names: p.names, lat: p.lat, lon: p.lon, ele, eleFromOsm: useOsm, dist, az, angle, visible: angle >= occ - 0.05 });
   }
 
   return {

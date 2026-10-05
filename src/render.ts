@@ -2,7 +2,6 @@ import { deltaDeg, normalizeDeg } from './geo';
 import { azimuthInView, projector, type Camera } from './projection';
 import type { PanoramaResult, Peak } from './protocol';
 
-const COMPASS = ['N', 'NO', 'O', 'SO', 'S', 'SW', 'W', 'NW'];
 const DIST_CLASSES = 10;
 const RAD = Math.PI / 180;
 const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
@@ -77,6 +76,10 @@ export interface RenderOptions {
   selectedPeakId: number | null;
   /** Freizuhaltender Bereich oben (px), z. B. für die Statuszeile. */
   topInset: number;
+  /** Anzeigename eines Gipfels (Sprache). */
+  peakName: (p: Peak) => string;
+  /** Himmelsrichtungen N, NO, … in der UI-Sprache. */
+  compass: string[];
 }
 
 export interface PlacedLabel {
@@ -107,7 +110,7 @@ export function renderView(
     drawLines(ctx, cam, pano, proj, pal);
   }
   const scaleY = opts.topInset + 14;
-  drawCompass(ctx, cam, proj, pal, scaleY);
+  drawCompass(ctx, cam, proj, pal, scaleY, opts.compass);
   const placed = pano ? drawPeaks(ctx, cam, pano, opts, proj, scaleY + 26) : [];
   if (opts.crosshair) drawCrosshair(ctx, cam, pal);
   return placed;
@@ -188,7 +191,7 @@ function drawLines(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaRes
  * Gradskala als gerade Zeile auf Bildschirmhöhe `y`. x-Position aus der Projektion
  * auf Höhe der Blickachse (gerade Linie ohne Rolle; bei Rolle Näherung).
  */
-function drawCompass(ctx: CanvasRenderingContext2D, cam: Camera, proj: Project, pal: Palette, y: number) {
+function drawCompass(ctx: CanvasRenderingContext2D, cam: Camera, proj: Project, pal: Palette, y: number, compass: string[]) {
   // Schrittweite so, dass Beschriftungen mindestens ~52 px auseinanderliegen
   const pxPerDeg = cam.width / cam.hfov;
   const step = [1, 2, 5, 10, 15, 30, 45].find((s) => s * pxPerDeg >= 52) ?? 45;
@@ -202,7 +205,7 @@ function drawCompass(ctx: CanvasRenderingContext2D, cam: Camera, proj: Project, 
     const major = a % 45 === 0;
     ctx.font = `${major ? 600 : 400} 11px ${FONT}`;
     ctx.fillRect(p[0] - 0.5, y - (major ? 8 : 5), 1, major ? 8 : 5);
-    ctx.fillText(major ? COMPASS[a / 45] : `${a}°`, p[0], y + 3);
+    ctx.fillText(major ? compass[a / 45] : `${a}°`, p[0], y + 3);
   }
 }
 
@@ -255,7 +258,7 @@ function drawPeaks(
   ctx.textAlign = 'left';
   for (const { peak, x, y } of placed) {
     const selected = peak.id === opts.selectedPeakId;
-    const name = peak.name;
+    const name = opts.peakName(peak);
     const meta = `${Math.round(peak.ele)} m · ${(peak.dist / 1000).toFixed(peak.dist < 10_000 ? 1 : 0)} km`;
     ctx.font = nameFont;
     const wName = ctx.measureText(name).width;
@@ -302,6 +305,7 @@ export function renderOverview(
   cam: Camera,
   pano: PanoramaResult | null,
   pal: Palette,
+  compass: string[],
 ) {
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = pal.overviewBg;
@@ -338,5 +342,5 @@ export function renderOverview(
   ctx.font = `600 10px ${FONT}`;
   ctx.textBaseline = 'top';
   ctx.textAlign = 'center';
-  for (let k = 0; k < 8; k++) ctx.fillText(COMPASS[k], ((k * 45) / 360) * W + (k === 0 ? 8 : 0), 3);
+  for (let k = 0; k < 8; k++) ctx.fillText(compass[k], ((k * 45) / 360) * W + (k === 0 ? 8 : 0), 3);
 }

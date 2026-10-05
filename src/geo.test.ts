@@ -86,11 +86,16 @@ describe('peaks', () => {
 });
 
 describe('overpass csv', () => {
-  it('parses rows, prefers name:de, skips incomplete lines', () => {
-    const csv = '1\t46.97\t8.25\tPilatus\t\t2128\n2\t46.55\t7.96\tJungfrau\tJungfrau\t4158\n3\t46.6\t8.0\tCervin\tMatterhorn\t4478\n\n';
+  it('parses rows with localized names, skips incomplete lines', () => {
+    // id, lat, lon, ele, name, name:de, name:en, name:fr, name:it
+    const csv =
+      '1\t46.97\t8.25\t2128\tPilatus\t\t\t\t\n' +
+      '2\t45.98\t7.66\t4478\tMatterhorn\t\t\tCervin\tCervino\n' +
+      '3\t\t\t\t\t\t\t\t\n\n';
     const peaks = parseOverpassCsv(csv);
-    expect(peaks.map((p) => p.name)).toEqual(['Pilatus', 'Jungfrau', 'Matterhorn']);
-    expect(peaks[0]).toEqual({ id: 1, name: 'Pilatus', lat: 46.97, lon: 8.25, ele: 2128 });
+    expect(peaks).toHaveLength(2);
+    expect(peaks[0]).toEqual({ id: 1, name: 'Pilatus', names: {}, lat: 46.97, lon: 8.25, ele: 2128 });
+    expect(peaks[1].names).toEqual({ fr: 'Cervin', it: 'Cervino' });
   });
 
   it('bbox covers the radius and is rounded outward', () => {

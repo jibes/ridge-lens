@@ -1,0 +1,310 @@
+export const LANGS = ['de', 'en', 'fr', 'it'] as const;
+export type Lang = (typeof LANGS)[number];
+
+const de = {
+  'app.description': 'Sichtbare Bergketten und Gipfelnamen aus Standort und Handy-Ausrichtung',
+  'aria.view': 'Bergpanorama',
+  'aria.overview': '360°-Übersicht, antippen zum Drehen',
+  'aria.controls': 'Steuerung',
+  'aria.settings': 'Einstellungen',
+  'aria.locate': 'Standort neu bestimmen',
+  'aria.close': 'Schließen',
+  'settings.title': 'Einstellungen',
+  'settings.place': 'Ort',
+  'settings.ownPlace': 'Eigener Standort',
+  'settings.lat': 'Breite',
+  'settings.lon': 'Länge',
+  'settings.ele': 'Höhe (m)',
+  'settings.radius': 'Sichtweite (km)',
+  'settings.hidden': 'Verdeckte Gipfel zeigen',
+  'settings.language': 'Sprache',
+  'settings.langAuto': 'Automatisch (System)',
+  'settings.compute': 'Panorama berechnen',
+  'settings.resetOffset': 'Kompass-Korrektur zurücksetzen',
+  'settings.install': 'App installieren',
+  'settings.help':
+    'Gipfel antippen, Fadenkreuz auf den echten Gipfel richten, „Übernehmen“: korrigiert den Kompass. Ohne Sensor: ziehen zum Drehen, zwei Finger zum Zoomen.',
+  'credits.elevation': 'Höhendaten',
+  'credits.peaks': 'Gipfel',
+  'credits.osm': 'OpenStreetMap-Mitwirkende',
+  'auto': 'auto',
+  'align.apply': 'Übernehmen',
+  'align.center': 'Zentrieren',
+  'align.instruction': '{name}: Fadenkreuz auf den echten Gipfel richten, dann übernehmen.',
+  'align.done': 'Kompass auf {name} ausgerichtet (Korrektur {offset}°).',
+  'status.ready': 'Bereit',
+  'status.start': 'Starte …',
+  'status.invalidCoords': 'Ungültige Koordinaten',
+  'status.locating': 'Bestimme Standort …',
+  'status.result': '{ele} m ü. M. · {count} Gipfel sichtbar',
+  'status.tilesMissing': '{n} Höhenkacheln fehlen',
+  'status.error': 'Fehler: {msg}',
+  'progress.tilesNear': 'Höhenmodell nah: {done}/{total}',
+  'progress.tilesFar': 'Höhenmodell fern: {done}/{total}',
+  'progress.peaks': 'Lade Gipfel …',
+  'progress.ridges': 'Berechne Bergketten …',
+  'error.noTiles': 'Höhendaten konnten nicht geladen werden (Netzwerk?)',
+  'error.noElevation': 'Keine Höhendaten am Standort',
+  'error.peaks': 'Gipfel nicht geladen ({detail})',
+  'gps.unavailable': 'kein GPS verfügbar',
+  'gps.denied': 'Standortzugriff verweigert',
+  'gps.error': 'GPS-Fehler',
+  'gps.fallback': 'GPS: {err} – zeige {place}',
+  'gps.placeFromLink': 'Ort aus Link',
+  'sensor.corrected': 'korrigiert {offset}°',
+  'sensor.noCompass': 'kein Kompass – Gipfel antippen zum Ausrichten',
+  'sensor.brave': 'Brave blockiert Bewegungssensoren – Blick per Ziehen steuern',
+  'peak.dem': 'DEM',
+  'peak.azimuth': 'Azimut',
+  'peak.elevationAngle': 'Höhenwinkel',
+  'peak.hidden': 'verdeckt',
+  'compass8': 'N,NO,O,SO,S,SW,W,NW',
+  'compass16': 'N,NNO,NO,ONO,O,OSO,SO,SSO,S,SSW,SW,WSW,W,WNW,NW,NNW',
+};
+
+export type Key = keyof typeof de;
+export const KEYS = Object.keys(de) as Key[];
+type Dict = Record<Key, string>;
+
+const en: Dict = {
+  'app.description': 'Visible mountain ridges and peak names from your location and phone orientation',
+  'aria.view': 'Mountain panorama',
+  'aria.overview': '360° overview, tap to turn',
+  'aria.controls': 'Controls',
+  'aria.settings': 'Settings',
+  'aria.locate': 'Update location',
+  'aria.close': 'Close',
+  'settings.title': 'Settings',
+  'settings.place': 'Place',
+  'settings.ownPlace': 'My location',
+  'settings.lat': 'Latitude',
+  'settings.lon': 'Longitude',
+  'settings.ele': 'Elevation (m)',
+  'settings.radius': 'View distance (km)',
+  'settings.hidden': 'Show hidden peaks',
+  'settings.language': 'Language',
+  'settings.langAuto': 'Automatic (system)',
+  'settings.compute': 'Compute panorama',
+  'settings.resetOffset': 'Reset compass correction',
+  'settings.install': 'Install app',
+  'settings.help':
+    'Tap a peak, aim the crosshair at the real peak, then “Apply”: this corrects the compass. Without sensors: drag to turn, pinch to zoom.',
+  'credits.elevation': 'Elevation data',
+  'credits.peaks': 'Peaks',
+  'credits.osm': 'OpenStreetMap contributors',
+  'auto': 'auto',
+  'align.apply': 'Apply',
+  'align.center': 'Center',
+  'align.instruction': '{name}: aim the crosshair at the real peak, then apply.',
+  'align.done': 'Compass aligned to {name} (correction {offset}°).',
+  'status.ready': 'Ready',
+  'status.start': 'Starting …',
+  'status.invalidCoords': 'Invalid coordinates',
+  'status.locating': 'Finding location …',
+  'status.result': '{ele} m a.s.l. · {count} peaks visible',
+  'status.tilesMissing': '{n} elevation tiles missing',
+  'status.error': 'Error: {msg}',
+  'progress.tilesNear': 'Terrain near: {done}/{total}',
+  'progress.tilesFar': 'Terrain far: {done}/{total}',
+  'progress.peaks': 'Loading peaks …',
+  'progress.ridges': 'Computing ridges …',
+  'error.noTiles': 'Could not load elevation data (network?)',
+  'error.noElevation': 'No elevation data at this location',
+  'error.peaks': 'Peaks not loaded ({detail})',
+  'gps.unavailable': 'no GPS available',
+  'gps.denied': 'location access denied',
+  'gps.error': 'GPS error',
+  'gps.fallback': 'GPS: {err} – showing {place}',
+  'gps.placeFromLink': 'place from link',
+  'sensor.corrected': 'corrected {offset}°',
+  'sensor.noCompass': 'no compass – tap a peak to align',
+  'sensor.brave': 'Brave blocks motion sensors – drag to look around',
+  'peak.dem': 'DEM',
+  'peak.azimuth': 'Azimuth',
+  'peak.elevationAngle': 'Elevation angle',
+  'peak.hidden': 'hidden',
+  'compass8': 'N,NE,E,SE,S,SW,W,NW',
+  'compass16': 'N,NNE,NE,ENE,E,ESE,SE,SSE,S,SSW,SW,WSW,W,WNW,NW,NNW',
+};
+
+const fr: Dict = {
+  'app.description': 'Crêtes visibles et noms des sommets selon votre position et l’orientation du téléphone',
+  'aria.view': 'Panorama de montagne',
+  'aria.overview': 'Vue à 360°, toucher pour tourner',
+  'aria.controls': 'Commandes',
+  'aria.settings': 'Réglages',
+  'aria.locate': 'Actualiser la position',
+  'aria.close': 'Fermer',
+  'settings.title': 'Réglages',
+  'settings.place': 'Lieu',
+  'settings.ownPlace': 'Ma position',
+  'settings.lat': 'Latitude',
+  'settings.lon': 'Longitude',
+  'settings.ele': 'Altitude (m)',
+  'settings.radius': 'Portée (km)',
+  'settings.hidden': 'Afficher les sommets cachés',
+  'settings.language': 'Langue',
+  'settings.langAuto': 'Automatique (système)',
+  'settings.compute': 'Calculer le panorama',
+  'settings.resetOffset': 'Réinitialiser la correction de boussole',
+  'settings.install': 'Installer l’app',
+  'settings.help':
+    'Touchez un sommet, visez le vrai sommet avec le réticule, puis « Appliquer » : la boussole est corrigée. Sans capteurs : glisser pour tourner, pincer pour zoomer.',
+  'credits.elevation': 'Données d’altitude',
+  'credits.peaks': 'Sommets',
+  'credits.osm': 'contributeurs OpenStreetMap',
+  'auto': 'auto',
+  'align.apply': 'Appliquer',
+  'align.center': 'Centrer',
+  'align.instruction': '{name} : visez le vrai sommet avec le réticule, puis appliquez.',
+  'align.done': 'Boussole alignée sur {name} (correction {offset}°).',
+  'status.ready': 'Prêt',
+  'status.start': 'Démarrage …',
+  'status.invalidCoords': 'Coordonnées invalides',
+  'status.locating': 'Localisation …',
+  'status.result': '{ele} m d’alt. · {count} sommets visibles',
+  'status.tilesMissing': '{n} tuiles d’altitude manquantes',
+  'status.error': 'Erreur : {msg}',
+  'progress.tilesNear': 'Relief proche : {done}/{total}',
+  'progress.tilesFar': 'Relief lointain : {done}/{total}',
+  'progress.peaks': 'Chargement des sommets …',
+  'progress.ridges': 'Calcul des crêtes …',
+  'error.noTiles': 'Impossible de charger les données d’altitude (réseau ?)',
+  'error.noElevation': 'Aucune donnée d’altitude à cet endroit',
+  'error.peaks': 'Sommets non chargés ({detail})',
+  'gps.unavailable': 'GPS indisponible',
+  'gps.denied': 'accès à la position refusé',
+  'gps.error': 'erreur GPS',
+  'gps.fallback': 'GPS : {err} – affichage de {place}',
+  'gps.placeFromLink': 'lieu du lien',
+  'sensor.corrected': 'corrigé {offset}°',
+  'sensor.noCompass': 'pas de boussole – touchez un sommet pour aligner',
+  'sensor.brave': 'Brave bloque les capteurs de mouvement – glisser pour regarder',
+  'peak.dem': 'MNT',
+  'peak.azimuth': 'Azimut',
+  'peak.elevationAngle': 'Angle de site',
+  'peak.hidden': 'caché',
+  'compass8': 'N,NE,E,SE,S,SO,O,NO',
+  'compass16': 'N,NNE,NE,ENE,E,ESE,SE,SSE,S,SSO,SO,OSO,O,ONO,NO,NNO',
+};
+
+const it: Dict = {
+  'app.description': 'Creste visibili e nomi delle vette in base alla posizione e all’orientamento del telefono',
+  'aria.view': 'Panorama montano',
+  'aria.overview': 'Panoramica a 360°, tocca per ruotare',
+  'aria.controls': 'Comandi',
+  'aria.settings': 'Impostazioni',
+  'aria.locate': 'Aggiorna posizione',
+  'aria.close': 'Chiudi',
+  'settings.title': 'Impostazioni',
+  'settings.place': 'Luogo',
+  'settings.ownPlace': 'La mia posizione',
+  'settings.lat': 'Latitudine',
+  'settings.lon': 'Longitudine',
+  'settings.ele': 'Quota (m)',
+  'settings.radius': 'Visibilità (km)',
+  'settings.hidden': 'Mostra vette nascoste',
+  'settings.language': 'Lingua',
+  'settings.langAuto': 'Automatica (sistema)',
+  'settings.compute': 'Calcola panorama',
+  'settings.resetOffset': 'Azzera correzione bussola',
+  'settings.install': 'Installa app',
+  'settings.help':
+    'Tocca una vetta, punta il mirino sulla vetta reale, poi «Applica»: corregge la bussola. Senza sensori: trascina per ruotare, pizzica per zoomare.',
+  'credits.elevation': 'Dati altimetrici',
+  'credits.peaks': 'Vette',
+  'credits.osm': 'contributori OpenStreetMap',
+  'auto': 'auto',
+  'align.apply': 'Applica',
+  'align.center': 'Centra',
+  'align.instruction': '{name}: punta il mirino sulla vetta reale, poi applica.',
+  'align.done': 'Bussola allineata su {name} (correzione {offset}°).',
+  'status.ready': 'Pronto',
+  'status.start': 'Avvio …',
+  'status.invalidCoords': 'Coordinate non valide',
+  'status.locating': 'Rilevamento posizione …',
+  'status.result': '{ele} m s.l.m. · {count} vette visibili',
+  'status.tilesMissing': '{n} tessere altimetriche mancanti',
+  'status.error': 'Errore: {msg}',
+  'progress.tilesNear': 'Terreno vicino: {done}/{total}',
+  'progress.tilesFar': 'Terreno lontano: {done}/{total}',
+  'progress.peaks': 'Caricamento vette …',
+  'progress.ridges': 'Calcolo creste …',
+  'error.noTiles': 'Impossibile caricare i dati altimetrici (rete?)',
+  'error.noElevation': 'Nessun dato altimetrico in questa posizione',
+  'error.peaks': 'Vette non caricate ({detail})',
+  'gps.unavailable': 'GPS non disponibile',
+  'gps.denied': 'accesso alla posizione negato',
+  'gps.error': 'errore GPS',
+  'gps.fallback': 'GPS: {err} – mostro {place}',
+  'gps.placeFromLink': 'luogo dal link',
+  'sensor.corrected': 'corretta {offset}°',
+  'sensor.noCompass': 'nessuna bussola – tocca una vetta per allineare',
+  'sensor.brave': 'Brave blocca i sensori di movimento – trascina per guardarti intorno',
+  'peak.dem': 'DEM',
+  'peak.azimuth': 'Azimut',
+  'peak.elevationAngle': 'Angolo di elevazione',
+  'peak.hidden': 'nascosta',
+  'compass8': 'N,NE,E,SE,S,SO,O,NO',
+  'compass16': 'N,NNE,NE,ENE,E,ESE,SE,SSE,S,SSO,SO,OSO,O,ONO,NO,NNO',
+};
+
+const DICTS: Record<Lang, Dict> = { de, en, fr, it };
+const STORAGE_KEY = 'ridge-lens-lang';
+
+/** Erste unterstützte Systemsprache, sonst Englisch. */
+export function detectLang(preferred: readonly string[] = navigator.languages ?? [navigator.language]): Lang {
+  for (const tag of preferred) {
+    const base = tag.toLowerCase().split('-')[0];
+    if ((LANGS as readonly string[]).includes(base)) return base as Lang;
+  }
+  return 'en';
+}
+
+/** Gespeicherte Wahl ('auto' = Systemsprache). */
+export function storedLangChoice(): Lang | 'auto' {
+  try {
+    const v = localStorage.getItem(STORAGE_KEY);
+    if (v && (LANGS as readonly string[]).includes(v)) return v as Lang;
+  } catch {
+    /* kein Speicher */
+  }
+  return 'auto';
+}
+
+export function storeLangChoice(choice: Lang | 'auto'): void {
+  try {
+    if (choice === 'auto') localStorage.removeItem(STORAGE_KEY);
+    else localStorage.setItem(STORAGE_KEY, choice);
+  } catch {
+    /* kein Speicher */
+  }
+}
+
+let current: Lang = 'en';
+
+export function setLang(lang: Lang): void {
+  current = lang;
+}
+
+export function lang(): Lang {
+  return current;
+}
+
+/** Übersetzt `key`; `{name}` wird durch params.name ersetzt. */
+export function t(key: Key, params: Record<string, string | number> = {}, l: Lang = current): string {
+  return DICTS[l][key].replace(/\{(\w+)\}/g, (_, k: string) => String(params[k] ?? `{${k}}`));
+}
+
+export function compassLabels(points: 8 | 16): string[] {
+  return t(points === 8 ? 'compass8' : 'compass16').split(',');
+}
+
+/** Setzt Texte im DOM: data-i18n (Text), data-i18n-aria (aria-label), data-i18n-placeholder. */
+export function applyDom(root: ParentNode = document): void {
+  document.documentElement.lang = current;
+  for (const el of root.querySelectorAll<HTMLElement>('[data-i18n]')) el.textContent = t(el.dataset.i18n as Key);
+  for (const el of root.querySelectorAll<HTMLElement>('[data-i18n-aria]')) el.setAttribute('aria-label', t(el.dataset.i18nAria as Key));
+  for (const el of root.querySelectorAll<HTMLInputElement>('[data-i18n-placeholder]')) el.placeholder = t(el.dataset.i18nPlaceholder as Key);
+  document.querySelector('meta[name="description"]')?.setAttribute('content', t('app.description'));
+}
