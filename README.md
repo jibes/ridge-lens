@@ -36,7 +36,9 @@ Der Service Worker (`public/sw.js`) hält die App-Shell und alle geladenen Höhe
 
 Auf Touch-Geräten liegt das Bild der Rückkamera unter Bergketten und Gipfeln (Knopf in der Leiste schaltet um, Wahl wird gespeichert). Das Sichtfeld der Anzeige folgt aus dem Kamera-Bildwinkel (lange Bildseite, Standard 67° ≈ 26-mm-Hauptkamera) und dem Bildausschnitt (`object-fit: cover`), siehe `src/camera.ts`.
 
-Kalibrieren: Gipfel antippen und anpeilen richtet den Kompass aus; passen Gipfel am Bildrand nicht, mit zwei Fingern den Bildwinkel anpassen (Wert und Zurücksetzen in den Einstellungen).
+Automatischer Abgleich (`src/vision.ts`, im Worker `src/vision-worker.ts`, abschaltbar in den Einstellungen): einmal pro Sekunde bei ruhig gehaltenem Handy wird das Videobild auf 160 Spalten verkleinert; je Spalte gilt die unterste deutliche Farbkante mit blauem Himmel darüber als Horizont (Suchfenster = wo der berechnete Horizont bei ±12° Kompass- und ±4° Neigungsfehler liegen kann). Eine Suche über Kurs (±12°), Neigung (±4°) und Bildwinkel (±15 %) legt diese Punkte auf den berechneten Horizont (robuste Abweichung: beste 70 % der Spalten). Übernommen wird nur bei guter Deckung (≤ 0,15°), eindeutiger Lösung und deutlich schlechterer Deckung bei ±1,5° Kursversatz – Wald, Gebäude, Nebel, flacher Horizont und gerade Kanten werden verworfen. Treffer gehen zur Hälfte je Durchgang in Kompass-Korrektur und Bildwinkel ein. Synthetische Tests: Kurs ±0,06°, Neigung ±0,02°, Bildwinkel ±0,3 %.
+
+Manuell: Gipfel antippen und anpeilen richtet den Kompass aus; mit zwei Fingern den Bildwinkel anpassen (Wert und Zurücksetzen in den Einstellungen).
 
 ## Sensormodus
 
@@ -67,7 +69,7 @@ Technik (`src/orientation.ts`): Rotationsmatrix aus α/β/γ (W3C), Blickachse =
 
 1. ~~Geräteorientierung steuert den Blick; Kompass-Korrektur.~~
 2. ~~Kamerabild unter dem Overlay, Sichtfeld-Kalibrierung.~~
-3. Automatischer Abgleich: Skyline aus dem Kamerabild gegen berechneten Horizont korrelieren.
+3. ~~Automatischer Abgleich: Skyline aus dem Kamerabild gegen berechneten Horizont korrelieren.~~ (im Feld zu erproben)
 
 ## Datenquellen
 

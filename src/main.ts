@@ -4,6 +4,7 @@ import type { Camera } from './projection';
 import type { ComputeRequest, PanoramaResult, Peak, WorkerMessage } from './protocol';
 import { applyDom, compassLabels, detectLang, lang, setLang, storedLangChoice, storeLangChoice, t, type Lang } from './i18n';
 import { CameraFeed, DEFAULT_CAMERA_FOV, displayHfov, fovLongFromDisplay } from './camera';
+import type { VisionRequest, VisionResponse } from './vision-worker';
 import { CAMERA, DARK, LIGHT, renderOverview, renderView, type PlacedLabel } from './render';
 
 interface Preset {
@@ -510,7 +511,8 @@ function syncSensor() {
   sensorText.textContent =
     `${dir} ${cam.heading.toFixed(0)}°` +
     (corrected ? ` · ${t('sensor.corrected', { offset: fmtSigned(offset.heading) })}` : '') +
-    (tracker.status === 'relative' ? ` · ${t('sensor.noCompass')}` : '');
+    (tracker.status === 'relative' ? ` · ${t('sensor.noCompass')}` : '') +
+    (performance.now() - lastMatchAt < 3000 ? ` · ${t('sensor.matched')}` : '');
 }
 
 /** Rauschanzeige im offenen Einstellungsblatt: zeigt, welche Achse zittert. */
@@ -683,6 +685,80 @@ $<HTMLButtonElement>('camera-fov-reset').addEventListener('click', () => {
   saveCameraFov();
   requestRender();
 });
+
+// --- Automatischer Abgleich am Kamerabild -----------------------------------------
+
+const visionWorker = new Worker(new URL('./vision-worker.ts', import.meta.url), { type: 'module' });
+const autoAlignIn = $<HTMLInputElement>('auto-align');
+const AUTO_ALIGN_KEY = 'ridge-lens-auto-align';
+try {
+  autoAlignIn.checked = localStorage.getItem(AUTO_ALIGN_KEY) !== 'off';
+} catch {
+  /* kein Speicher */
+}
+autoAlignIn.addEventListener('change', () => {
+  try {
+    localStorage.setItem(AUTO_ALIGN_KEY, autoAlignIn.checked ? 'on' : 'off');
+  } catch {
+    /* kein Speicher */
+  }
+});
+
+const VISION_COLS = 160;
+/** Anteil einer Korrektur, der pro Abgleich übernommen wird (gleitend statt sprunghaft). */
+const VISION_GAIN = 0.5;
+const visionCanvas = document.createElement('canvas');
+const visionCtx = visionCanvas.getContext('2d', { willReadFrequently: true })!;
+let visionHorizon: Float32Array | null = null;
+let visionBusy = false;
+let visionId = 0;
+let lastMatchAt = -Infinity;
+let lastPose: { heading: number; pitch: number } | null = null;
+
+/** Ein Videobild im angezeigten Ausschnitt (object-fit: cover) verkleinert an den Worker. */
+function visionTick() {
+  const pose = { heading: cam.heading, pitch: cam.pitch };
+  const steady = lastPose && Math.abs(deltaDeg(pose.heading, lastPose.heading)) < 1.5 && Math.abs(pose.pitch - lastPose.pitch) < 1;
+  lastPose = pose;
+  if (!autoAlignIn.checked || visionBusy || !steady || !pano || !sensorOn || !cameraShown() || document.hidden) return;
+  if (visionHorizon !== pano.horizon) {
+    visionHorizon = pano.horizon;
+    visionWorker.postMessage({ type: 'horizon', horizon: pano.horizon.slice(), azStep: pano.azStep } satisfies VisionRequest);
+  }
+  const { w: vw, h: vh } = cameraFeed.size;
+  const scale = Math.max(cam.width / vw, cam.height / vh);
+  const sw = cam.width / scale;
+  const sh = cam.height / scale;
+  const cols = VISION_COLS;
+  const rows = Math.round((cols * cam.height) / cam.width);
+  visionCanvas.width = cols;
+  visionCanvas.height = rows;
+  visionCtx.drawImage(videoEl, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, cols, rows);
+  const pixels = visionCtx.getImageData(0, 0, cols, rows).data;
+  visionBusy = true;
+  visionWorker.postMessage(
+    { type: 'frame', id: ++visionId, pixels, cols, rows, cam: { ...cam } } satisfies VisionRequest,
+    [pixels.buffer],
+  );
+}
+
+visionWorker.onmessage = (ev: MessageEvent<VisionResponse>) => {
+  visionBusy = false;
+  const { match, cam: snap } = ev.data;
+  if (!match.ok || !sensorOn || !cameraShown()) return;
+  // Korrekturen beziehen sich auf die Kamera zum Aufnahmezeitpunkt; Offsets sind darin enthalten
+  offset.heading = deltaDeg(offset.heading + VISION_GAIN * match.dHeading, 0);
+  offset.pitch = Math.max(-20, Math.min(20, offset.pitch + VISION_GAIN * match.dPitch));
+  saveOffset();
+  const { w, h } = cameraFeed.size;
+  const hfov = snap.hfov * (1 + VISION_GAIN * (match.fovScale - 1));
+  cameraFov = Math.min(120, Math.max(30, fovLongFromDisplay(hfov, w, h, snap.width, snap.height)));
+  saveCameraFov();
+  lastMatchAt = performance.now();
+  requestRender();
+};
+visionWorker.onerror = () => (visionBusy = false);
+setInterval(visionTick, 1000);
 
 // --- Sprache ----------------------------------------------------------------------
 
