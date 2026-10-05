@@ -1,5 +1,5 @@
 // Service Worker: App-Shell offline, Höhenkacheln dauerhaft im Cache (Offline am Berg).
-const VERSION = 'v1';
+const VERSION = 'v2';
 const SHELL = `ridge-lens-shell-${VERSION}`;
 const TILES = 'ridge-lens-tiles-v1';
 

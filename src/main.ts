@@ -209,8 +209,18 @@ function showResultStatus(result: PanoramaResult) {
   });
 }
 
+/** Startbildschirm ausblenden (nach erstem Ergebnis oder Fehler, spätestens nach 10 s). */
+const splash = document.getElementById('splash');
+function hideSplash() {
+  if (!splash || splash.classList.contains('done')) return;
+  splash.classList.add('done');
+  setTimeout(() => splash.remove(), 500);
+}
+setTimeout(hideSplash, 10_000);
+
 worker.onmessage = (ev: MessageEvent<WorkerMessage>) => {
   const msg = ev.data;
+  if (msg.type === 'result' || msg.type === 'error') hideSplash();
   // Nachzügler einer früheren Berechnung (anderer Standort) verwerfen
   if (msg.id !== requestId) return;
   if (msg.type === 'peaks') {

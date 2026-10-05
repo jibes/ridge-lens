@@ -10,12 +10,17 @@
     <meta name="description" content="Sichtbare Bergketten und Gipfelnamen aus Standort und Handy-Ausrichtung" />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
+    <link rel="icon" href="./icons/favicon-32.png" sizes="32x32" type="image/png" />
     <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
+    <div id="splash" aria-hidden="true">
+      <img src="./icons/icon.svg" alt="" width="112" height="112" />
+      <div class="splash-name">Ridge Lens</div>
+    </div>
     <main id="stage">
       <video id="camera" playsinline muted autoplay aria-hidden="true"></video>
       <canvas id="view" data-i18n-aria="aria.view"></canvas>

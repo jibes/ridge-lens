@@ -1,13 +1,26 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <defs>
     <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#4f86c6"/>
-      <stop offset="1" stop-color="#cfe0f1"/>
+      <stop offset="0" stop-color="#070b12"/>
+      <stop offset="1" stop-color="#2a3d57"/>
+    </linearGradient>
+    <linearGradient id="near" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c2a3d"/>
+      <stop offset="1" stop-color="#0b111b"/>
+    </linearGradient>
+    <linearGradient id="far" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4a6585"/>
+      <stop offset="1" stop-color="#22324a"/>
     </linearGradient>
   </defs>
   <rect width="512" height="512" fill="url(#sky)"/>
-  <path d="M0 330 L90 250 L150 290 L250 170 L330 260 L380 220 L512 320 L512 512 L0 512 Z" fill="#9fb0c2"/>
-  <path d="M0 380 L120 300 L200 350 L300 280 L420 360 L512 330 L512 512 L0 512 Z" fill="#5f6b63"/>
-  <path d="M250 170 L250 96" stroke="#18202b" stroke-width="8" stroke-linecap="round"/>
-  <circle cx="250" cy="170" r="16" fill="#c0392b"/>
+  <!-- ferne Kette -->
+  <path d="M0 318 72 282l56 16 78-74 58 46 66-32 72 40 110-30V512H0Z" fill="url(#far)"/>
+  <path d="M0 318 72 282l56 16 78-74 58 46 66-32 72 40 110-30" fill="none" stroke="#d7e6ff" stroke-opacity=".55" stroke-width="6" stroke-linejoin="round"/>
+  <!-- nahe Kette -->
+  <path d="M0 404 96 344l64 22 110-118 76 82 72-30 94 50V512H0Z" fill="url(#near)"/>
+  <path d="M0 404 96 344l64 22 110-118 76 82 72-30 94 50" fill="none" stroke="#fff" stroke-width="11" stroke-linejoin="round" stroke-linecap="round"/>
+  <!-- Gipfel-Label: Leitlinie und Marke -->
+  <path d="M270 226V118" stroke="#fff" stroke-opacity=".85" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="270" cy="248" r="17" fill="#ff6b57"/>
 </svg>
