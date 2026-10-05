@@ -74,6 +74,9 @@ export function rowsToPeaks(rows: PeakRow[], [s, w, n, e]: [number, number, numb
 
 interface DatasetIndex {
   region: { south: number; north: number; west: number; east: number };
+  /** Kantenlänge der Abfrageblöcke (°); `blocks` = fertig geladene Blöcke "süd_west". */
+  blockSize: number;
+  blocks: string[];
   tiles: string[];
 }
 
@@ -90,6 +93,14 @@ async function fetchBundledPeaks(bbox: [number, number, number, number]): Promis
   const [s, w, n, e] = bbox;
   const r = index.region;
   if (s < r.south || n > r.north || w < r.west || e > r.east) return null;
+  // Nur verwenden, wenn alle berührten Blöcke vollständig geladen sind
+  const B = index.blockSize;
+  const done = new Set(index.blocks);
+  for (let bs = r.south + Math.floor((s - r.south) / B) * B; bs < n; bs += B) {
+    for (let bw = r.west + Math.floor((w - r.west) / B) * B; bw < e; bw += B) {
+      if (!done.has(`${bs}_${bw}`)) return null;
+    }
+  }
   const available = new Set(index.tiles);
   const keys: string[] = [];
   for (let lat = Math.floor(s); lat <= Math.floor(n); lat++) {
