@@ -48,22 +48,23 @@ Kompass korrigieren:
 - **Anpeilen:** Gipfel-Label antippen → Fadenkreuz auf den echten Gipfel richten → „Übernehmen“. Setzt Korrektur für Kurs und Neigung.
 - **Feinjustieren:** Ziehen verschiebt im Sensormodus die Korrektur statt des Blicks (Pfeiltasten: 0,2°-Schritte).
 
-Die Korrektur bleibt im Browser gespeichert. Sie enthält auch die magnetische Missweisung (Alpen ≈ +3°), die Handy-Kompasse nicht abziehen.
+Die Korrektur bleibt im Browser gespeichert. Die magnetische Missweisung (Alpen ≈ +3,5°) zieht die App selbst ab: Handy-Kompasse zeigen nach magnetisch Nord, `src/magnetic.ts` rechnet sie für Standort und Datum nach dem World Magnetic Model 2025 (NOAA/BGS, gültig bis 2030; geprüft gegen die offiziellen Testwerte). Ältere gespeicherte Korrekturen, die die Missweisung noch enthielten, werden beim ersten Start umgerechnet.
 
 Technik (`src/orientation.ts`): Rotationsmatrix aus α/β/γ (W3C), Blickachse = −z des Geräts, Rolle relativ zum Horizont, Bildschirmdrehung (Querformat) berücksichtigt. Kurs per Sensorfusion (Komplementärfilter, `HeadingFusion`): Der ruhige Gyro-Kurs (Android: relatives `deviceorientation`; iOS: relatives α) bestimmt die Bewegung, der verrauschte Kompass (`deviceorientationabsolute` bzw. `webkitCompassHeading`) nur langsam (τ ≈ 4 s) den Nordbezug. Ohne Gyro-Strom wird der Kompass direkt genutzt. Danach One-Euro-Filter je Achse (reiner Kompass-Kurs am trägsten). Einstellungen zeigen das Rauschen je Achse (Diagnose); gemessen am Handy: Kompass ±0,4–0,8°, Neigung/Rolle ≤ 0,1°.
 
 ## Funktionsweise
 
 - **Höhenmodell:** [Terrarium-Kacheln](https://github.com/tilezen/joerd) von AWS; Zoom 12 (≈ 26 m) bis 8 km, Zoom 10 (≈ 100 m) darüber hinaus.
-- **Raycasting** (Web Worker, `src/worker.ts`): 3600 Strahlen à 0,1°, Höhenwinkel mit Erdkrümmung und Refraktion (k = 0,13). Kammlinie = letzter sichtbarer Punkt vor einem verdeckten Abschnitt (`src/panorama.ts`); benachbarte Kammpunkte ähnlicher Distanz werden zu Linien verbunden.
+- **Raycasting** (Web Worker, `src/worker.ts`): 3600 Strahlen à 0,1°, Höhenwinkel mit Erdkrümmung und Refraktion (k = 0,13). Kammlinie = letzter sichtbarer Punkt vor einem verdeckten Abschnitt (`src/panorama.ts`); benachbarte Kammpunkte ähnlicher Distanz werden zu Linien verbunden; fehlt ein Punkt in bis zu zwei Strahlen, wird die Lücke überbrückt. Stücke unter 0,8° Breite fallen weg (Rauschen in der Ferne), außer sie gehören zur Silhouette.
 - **Gipfel:** kachelweise (1°) nach Entfernung geladen, eigene Kachel zuerst; das Panorama erscheint sofort, weitere Gipfel kommen nach („Gipfel 3/9“). Quelle je Kachel: mitgelieferter Datensatz → Browser-Cache (30 Tage) → live Overpass (nacheinander, 2 s Pause, vier Server mit Timeout). Gescheiterte Kacheln werden beim nächsten Mal erneut versucht. Sichtbar, wenn Höhenwinkel ≥ maximaler Geländewinkel davor. OSM-Höhe wird bevorzugt, außer sie weicht > 400 m vom DEM ab.
-- **Gipfel-Datensatz:** Alpen und Umgebung (42–50° N, 2–18° O), erzeugt vom Workflow `peaks.yml` (`scripts/build-peaks.mjs`, täglich, unabhängig vom Deploy) aus OSM (`natural=peak` mit Name, Namen de/en/fr/it) in 2°-Blöcken (bei Überlastung 1°), fehlende und > 30 Tage alte zuerst. Ablage auf Branch `peaks-data` (ein Commit); der Deploy holt ihn per `scripts/restore-peaks.sh` in Sekunden.
+- **Beschriftung:** Liegen Gipfel zu dicht, gewinnt der bekanntere (`labelScore` in `src/render.ts`): Zahl der Wikipedia-Sprachversionen (über den Wikidata-Verweis in OSM), wie weit er über die Silhouette daneben hinausragt, dann Höhe.
+- **Gipfel-Datensatz:** Alpen und Umgebung (42–50° N, 2–18° O), erzeugt vom Workflow `peaks.yml` (`scripts/build-peaks.mjs`, täglich, unabhängig vom Deploy) aus OSM (`natural=peak` mit Name, Namen de/en/fr/it, Wikidata-Verweis → Zahl der Wikipedia-Sprachversionen per Wikidata-API) in 2°-Blöcken (bei Überlastung 1°), fehlende und > 30 Tage alte zuerst. Ablage auf Branch `peaks-data` (ein Commit); der Deploy holt ihn per `scripts/restore-peaks.sh` in Sekunden.
 - **Projektion** (`src/projection.ts`): Lochkamera mit Blickrichtung, Neigung und Sichtfeld – dasselbe Modell wie später für das Kamerabild.
 
 ## Bekannte Grenzen
 
 - DEM glättet Gipfel (Rigi: max. 1758 statt 1797 m). Abhilfe: Liegt ein OSM-Gipfel mit Höhe < 80 m entfernt, gilt dessen Höhe; sonst, falls das Gelände ringsum abfällt, die höchste DEM-Stelle im Umkreis von 40 m. GPS-Höhe wird nicht verwendet (ellipsoidisch, in der Schweiz ≈ 50 m zu hoch). Manuelle Höhe in den Einstellungen hat Vorrang.
-- Kammlinien enthalten noch kurze Fragmente; Gipfel-Labels werden nur nach Höhe ausgedünnt.
+- Bekanntheit live geladener Kacheln (außerhalb des Datensatzes) nur grob: Wikidata-Verweis ja/nein.
 
 ## Nächste Stufen
 

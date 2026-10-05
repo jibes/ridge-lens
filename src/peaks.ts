@@ -9,6 +9,8 @@ export interface PeakRaw {
   lon: number;
   /** Höhe laut OSM, falls brauchbar angegeben. */
   ele: number | null;
+  /** Bekanntheit: Zahl der Wikipedia-Sprachversionen (Datensatz) bzw. 1 bei Wikidata-Verweis (live), sonst 0. */
+  fame: number;
 }
 
 // Öffentliche Overpass-Instanzen; bei Überlastung (429/504, ohne CORS → "Failed to fetch") nächste versuchen
@@ -18,7 +20,7 @@ const ENDPOINTS = [
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
 ];
-const CACHE_NAME = 'ridge-lens-peaks-v4';
+const CACHE_NAME = 'ridge-lens-peaks-v5';
 const NAME_LANGS: Lang[] = ['de', 'en', 'fr', 'it'];
 const TIMEOUT_MS = 30_000;
 
@@ -32,31 +34,32 @@ export function parseEle(raw: string | undefined): number | null {
   return Number.isFinite(v) && v > -500 && v < 9000 ? v : null;
 }
 
-/** Overpass-CSV (Tab-getrennt): id, lat, lon, ele, name, name:de, name:en, name:fr, name:it. */
+/** Overpass-CSV (Tab-getrennt): id, lat, lon, ele, name, name:de, name:en, name:fr, name:it, wikidata. */
 export function parseOverpassCsv(text: string): PeakRaw[] {
   const out: PeakRaw[] = [];
   for (const line of text.split('\n')) {
-    const [id, lat, lon, ele, name, ...localized] = line.split('\t');
+    const [id, lat, lon, ele, name, ...rest] = line.split('\t');
     if (!name || !lat || !lon) continue;
     const names: PeakRaw['names'] = {};
     NAME_LANGS.forEach((l, i) => {
-      if (localized[i]) names[l] = localized[i];
+      if (rest[i]) names[l] = rest[i];
     });
-    out.push({ id: Number(id), name, names, lat: Number(lat), lon: Number(lon), ele: parseEle(ele) });
+    const fame = rest[NAME_LANGS.length]?.trim() ? 1 : 0;
+    out.push({ id: Number(id), name, names, lat: Number(lat), lon: Number(lon), ele: parseEle(ele), fame });
   }
   return out;
 }
 
-/** Zeile im mitgelieferten Datensatz: [id, lat, lon, ele|null, name, de, en, fr, it]. */
-export type PeakRow = [number, number, number, number | null, string, string, string, string, string];
+/** Zeile im mitgelieferten Datensatz: [id, lat, lon, ele|null, name, de, en, fr, it, fame] (fame fehlt in älteren Kacheln). */
+export type PeakRow = [number, number, number, number | null, string, string, string, string, string, number?];
 
 export function rowsToPeaks(rows: PeakRow[]): PeakRaw[] {
-  return rows.map(([id, lat, lon, ele, name, ...localized]) => {
+  return rows.map(([id, lat, lon, ele, name, de, en, fr, it, fame]) => {
     const names: PeakRaw['names'] = {};
-    NAME_LANGS.forEach((l, i) => {
-      if (localized[i]) names[l] = localized[i];
+    [de, en, fr, it].forEach((n, i) => {
+      if (n) names[NAME_LANGS[i]] = n;
     });
-    return { id, name, names, lat, lon, ele };
+    return { id, name, names, lat, lon, ele, fame: fame ?? 0 };
   });
 }
 
@@ -124,7 +127,7 @@ function bundledCovers(index: DatasetIndex | null, lat: number, lon: number): bo
 /** Eine 1°-Kachel live von Overpass; Punkte auf der Nord-/Ostkante gehören zur Nachbarkachel. */
 async function fetchOverpassTile(lat: number, lon: number): Promise<PeakRaw[]> {
   const query =
-    `[out:csv(::id,::lat,::lon,ele,name,${NAME_LANGS.map((l) => `"name:${l}"`).join(',')};false;"\t")]` +
+    `[out:csv(::id,::lat,::lon,ele,name,${NAME_LANGS.map((l) => `"name:${l}"`).join(',')},wikidata;false;"\t")]` +
     `[timeout:60][bbox:${lat},${lon},${lat + 1},${lon + 1}];` +
     `node["natural"="peak"]["name"];out qt;`;
   const qs = `?data=${encodeURIComponent(query)}`;
@@ -154,7 +157,9 @@ async function fetchOverpassTile(lat: number, lon: number): Promise<PeakRaw[]> {
  * geliefert und beim nächsten Mal erneut versucht.
  */
 export async function* loadPeakTiles(center: LatLon, radius: number): AsyncGenerator<PeakTile, void> {
-  const base = new URL('../peaks/', import.meta.url);
+  // Pfad als Variable: ein Literal in new URL(…, import.meta.url) schreibt Vite um (im Dev-Server ohne Schrägstrich)
+  const dir = '../peaks/';
+  const base = new URL(dir, import.meta.url);
   const index = await loadIndex(base);
   const cache = await caches.open(CACHE_NAME).catch(() => null);
   let lastNetwork = 0;

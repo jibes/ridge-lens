@@ -23,6 +23,10 @@ export interface Peak {
   lon: number;
   ele: number;
   eleFromOsm: boolean;
+  /** Bekanntheit, siehe PeakRaw.fame. */
+  fame: number;
+  /** Wie weit der Gipfel über die Silhouette daneben (±1,5°) hinausragt (Grad, ≥ 0). */
+  relief: number;
   dist: number;
   az: number;
   angle: number;

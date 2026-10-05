@@ -6,7 +6,8 @@
 // der CI-Cache den Stand sichert. Folgeläufe holen fehlende und veraltete Blöcke nach,
 // beginnend in der Mitte der Alpen.
 //
-// Kachel:   [[id, lat, lon, ele|null, name, de, en, fr, it], …] (leere Namen = "")
+// Kachel:   [[id, lat, lon, ele|null, name, de, en, fr, it, fame], …] (leere Namen = "")
+//           fame = Zahl der Wikipedia-Sprachversionen laut Wikidata (1 = Verweis, Abfrage fehlgeschlagen; 0 = kein Verweis)
 // index.json: { generated, region, blockSize, blocks: ["46_8", …], tiles: ["46_8", …] }
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 
@@ -14,6 +15,8 @@ const REGION = { south: 42, north: 50, west: 2, east: 18 };
 const BLOCK = 2;
 const CENTER = { lat: 46.75, lon: 8.25 };
 const MAX_AGE_DAYS = 30;
+// Blöcke älter als das aktuelle Kachelformat (Bekanntheit ergänzt) gelten als veraltet
+const FORMAT_SINCE = Date.parse('2026-10-05T21:00:00Z');
 const BUDGET_MS = Number(process.env.PEAKS_BUDGET_MIN ?? 20) * 60_000;
 const PAUSE_MS = Number(process.env.PEAKS_PAUSE_MS ?? 2_000);
 const ENDPOINTS = process.env.OVERPASS_ENDPOINTS?.split(',') ?? [
@@ -23,6 +26,10 @@ const ENDPOINTS = process.env.OVERPASS_ENDPOINTS?.split(',') ?? [
   'https://overpass.kumi.systems/api/interpreter',
 ];
 const LANGS = ['de', 'en', 'fr', 'it'];
+const WIKIDATA = process.env.WIKIDATA_API ?? 'https://www.wikidata.org/w/api.php';
+// Sitelinks, die keine Wikipedia-Sprachversion sind
+const NOT_WIKIPEDIA = new Set(['commonswiki', 'specieswiki', 'metawiki', 'wikidatawiki', 'mediawikiwiki', 'sourceswiki', 'outreachwiki', 'wikimaniawiki']);
+const HEADERS = { 'User-Agent': 'ridge-lens-build (github.com/jibes/ridge-lens)' };
 const OUT = new URL('../public/peaks/', import.meta.url);
 const STATE = new URL('blocks.json', OUT);
 const started = Date.now();
@@ -41,7 +48,7 @@ function parseEle(raw) {
 
 /** CSV für ein Rechteck der Kantenlänge `size`; null, wenn kein Server antwortet. */
 async function query(s, w, size) {
-  const fields = ['::id', '::lat', '::lon', 'ele', 'name', ...LANGS.map((l) => `"name:${l}"`)].join(',');
+  const fields = ['::id', '::lat', '::lon', 'ele', 'name', ...LANGS.map((l) => `"name:${l}"`), 'wikidata'].join(',');
   const q = `[out:csv(${fields};false;"\\t")][timeout:90][bbox:${s},${w},${s + size},${w + size}];node["natural"="peak"]["name"];out qt;`;
   for (const ep of ENDPOINTS) {
     const timeout = Math.min(100_000, left());
@@ -50,7 +57,7 @@ async function query(s, w, size) {
       const res = await fetch(ep, {
         method: 'POST',
         body: new URLSearchParams({ data: q }),
-        headers: { 'User-Agent': 'ridge-lens-build (github.com/jibes/ridge-lens)' },
+        headers: HEADERS,
         signal: AbortSignal.timeout(timeout),
       });
       const text = await res.text();
@@ -63,19 +70,50 @@ async function query(s, w, size) {
   return null;
 }
 
+/** Zahl der Wikipedia-Sprachversionen je Wikidata-Id; bei Fehlern fehlt die Id in der Map. */
+async function sitelinkCounts(ids) {
+  const out = new Map();
+  for (let i = 0; i < ids.length; i += 50) {
+    if (left() < 60_000) break;
+    const batch = ids.slice(i, i + 50);
+    try {
+      const url = `${WIKIDATA}?action=wbgetentities&props=sitelinks&format=json&maxlag=5&ids=${batch.join('|')}`;
+      const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(30_000) });
+      const body = await res.json();
+      if (!res.ok || body.error) throw new Error(body.error?.code ?? `HTTP ${res.status}`);
+      for (const [id, e] of Object.entries(body.entities ?? {})) {
+        out.set(id, Object.keys(e.sitelinks ?? {}).filter((k) => k.endsWith('wiki') && !NOT_WIKIPEDIA.has(k)).length);
+      }
+    } catch (err) {
+      console.warn(`  wikidata: ${err.name === 'TimeoutError' ? 'timeout' : err.message}`);
+    }
+    await sleep(200);
+  }
+  return out;
+}
+
 /** Zeilen eines Blocks nach 1°-Kacheln; Grenzpunkte gehören nur zur Kachel im Block. */
-function toTiles(text, s, w) {
+async function toTiles(text, s, w) {
   const tiles = new Map();
+  const wikidata = new Map();
   for (const line of text.split('\n')) {
-    const [id, lat, lon, ele, name, ...names] = line.split('\t');
+    const [id, lat, lon, ele, name, ...rest] = line.split('\t');
     if (!name || !lat || !lon) continue;
     const la = Number(lat);
     const lo = Number(lon);
     if (la < s || la >= s + BLOCK || lo < w || lo >= w + BLOCK) continue;
     const key = `${Math.floor(la)}_${Math.floor(lo)}`;
     if (!tiles.has(key)) tiles.set(key, new Map());
-    tiles.get(key).set(id, [Number(id), +la.toFixed(5), +lo.toFixed(5), parseEle(ele), name, ...LANGS.map((_, i) => names[i] ?? '')]);
+    const row = [Number(id), +la.toFixed(5), +lo.toFixed(5), parseEle(ele), name, ...LANGS.map((_, i) => rest[i] ?? ''), 0];
+    const qid = rest[LANGS.length]?.trim();
+    if (qid) wikidata.set(row, qid);
+    tiles.get(key).set(id, row);
   }
+  // Ungültige Ids (Tippfehler, Listen) würden eine ganze Wikidata-Abfrage scheitern lassen
+  const ids = [...new Set([...wikidata.values()].filter((q) => /^Q\d+$/.test(q)))];
+  const counts = await sitelinkCounts(ids);
+  for (const [row, qid] of wikidata) row[row.length - 1] = counts.get(qid) ?? 1;
+  console.log(`  wikidata: ${counts.size}/${ids.length} ids resolved`);
   return tiles;
 }
 
@@ -95,7 +133,11 @@ const blocks = [];
 for (let s = REGION.south; s < REGION.north; s += BLOCK) {
   for (let w = REGION.west; w < REGION.east; w += BLOCK) blocks.push([s, w]);
 }
-const age = (key) => (state[key] ? (Date.now() - Date.parse(state[key])) / 86_400_000 : Infinity);
+const age = (key) => {
+  if (!state[key]) return Infinity;
+  const t = Date.parse(state[key]);
+  return t < FORMAT_SINCE ? Infinity : (Date.now() - t) / 86_400_000;
+};
 const dist = ([s, w]) => Math.hypot(s + BLOCK / 2 - CENTER.lat, (w + BLOCK / 2 - CENTER.lon) * 0.7);
 /**
  * CSV eines 2°-Blocks. Dichte Blöcke laufen bei überlasteten Servern ins Timeout;
@@ -119,8 +161,8 @@ async function fetchBlock(s, w) {
 
 const todo = blocks
   .filter(([s, w]) => age(`${s}_${w}`) > MAX_AGE_DAYS)
-  // fehlende zuerst, dann älteste; innerhalb davon von der Mitte nach außen
-  .sort((a, b) => Number(!!state[`${a[0]}_${a[1]}`]) - Number(!!state[`${b[0]}_${b[1]}`]) || dist(a) - dist(b));
+  // fehlende und im alten Format zuerst, dann älteste; innerhalb davon von der Mitte nach außen
+  .sort((a, b) => Number(isFinite(age(`${a[0]}_${a[1]}`))) - Number(isFinite(age(`${b[0]}_${b[1]}`))) || dist(a) - dist(b));
 
 console.log(`${blocks.length - todo.length}/${blocks.length} blocks current, ${todo.length} to fetch`);
 let fetched = 0;
@@ -132,7 +174,7 @@ for (const [s, w] of todo) {
     await sleep(5_000);
     continue;
   }
-  const tiles = toTiles(text, s, w);
+  const tiles = await toTiles(text, s, w);
   let count = 0;
   // alle 1°-Kacheln des Blocks neu schreiben (auch leere, damit veraltete verschwinden)
   for (let la = s; la < s + BLOCK; la++) {

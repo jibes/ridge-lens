@@ -87,15 +87,16 @@ describe('peaks', () => {
 
 describe('overpass csv', () => {
   it('parses rows with localized names, skips incomplete lines', () => {
-    // id, lat, lon, ele, name, name:de, name:en, name:fr, name:it
+    // id, lat, lon, ele, name, name:de, name:en, name:fr, name:it, wikidata
     const csv =
       '1\t46.97\t8.25\t2128\tPilatus\t\t\t\t\n' +
-      '2\t45.98\t7.66\t4478\tMatterhorn\t\t\tCervin\tCervino\n' +
+      '2\t45.98\t7.66\t4478\tMatterhorn\t\t\tCervin\tCervino\tQ1374\n' +
       '3\t\t\t\t\t\t\t\t\n\n';
     const peaks = parseOverpassCsv(csv);
     expect(peaks).toHaveLength(2);
-    expect(peaks[0]).toEqual({ id: 1, name: 'Pilatus', names: {}, lat: 46.97, lon: 8.25, ele: 2128 });
+    expect(peaks[0]).toEqual({ id: 1, name: 'Pilatus', names: {}, lat: 46.97, lon: 8.25, ele: 2128, fame: 0 });
     expect(peaks[1].names).toEqual({ fr: 'Cervin', it: 'Cervino' });
+    expect(peaks[1].fame).toBe(1);
   });
 
   it('tiles within radius, own tile first, sorted by distance', () => {
@@ -110,8 +111,14 @@ describe('overpass csv', () => {
 });
 
 describe('bundled peak rows', () => {
-  it('converts rows', () => {
-    const rows: PeakRow[] = [[1, 46.97, 8.25, 2128, 'Pilatus', '', '', '', 'Monte Pilato']];
-    expect(rowsToPeaks(rows)).toEqual([{ id: 1, name: 'Pilatus', names: { it: 'Monte Pilato' }, lat: 46.97, lon: 8.25, ele: 2128 }]);
+  it('converts rows, with and without fame', () => {
+    const rows: PeakRow[] = [
+      [1, 46.97, 8.25, 2128, 'Pilatus', '', '', '', 'Monte Pilato', 23],
+      [2, 46.9, 8.2, null, 'Widderfeld', '', '', '', ''],
+    ];
+    expect(rowsToPeaks(rows)).toEqual([
+      { id: 1, name: 'Pilatus', names: { it: 'Monte Pilato' }, lat: 46.97, lon: 8.25, ele: 2128, fame: 23 },
+      { id: 2, name: 'Widderfeld', names: {}, lat: 46.9, lon: 8.2, ele: null, fame: 0 },
+    ]);
   });
 });

@@ -81,40 +81,46 @@ export interface Polylines {
 /**
  * Verbindet Kammpunkte benachbarter Azimut-Bins zu Linien, wenn Distanz und
  * Winkel ähnlich sind. Bins sind ringförmig (letzter Bin grenzt an ersten).
+ * Fehlt ein Kammpunkt in bis zu `maxGap − 1` Bins (Strahl knapp verfehlt),
+ * wird die Lücke überbrückt statt die Linie zu teilen.
  */
 export function linkRidges(
   bins: RidgePoint[][],
   azStep: number,
   relDist = 0.08,
   maxDAngle = 0.6,
+  maxGap = 3,
 ): Polylines {
   const n = bins.length;
-  // next[i][k] = Index in Bin i+1 oder −1
+  // next[i][k] = Index im Bin i + gap[i][k] oder −1
   const next = bins.map((b) => new Int32Array(b.length).fill(-1));
+  const gap = bins.map((b) => new Uint8Array(b.length));
   const hasPrev = bins.map((b) => new Uint8Array(b.length));
-  for (let i = 0; i < n; i++) {
-    const a = bins[i];
-    const j = (i + 1) % n;
-    const b = bins[j];
-    const taken = new Uint8Array(b.length);
-    for (let k = 0; k < a.length; k++) {
-      let best = -1;
-      let bestScore = Infinity;
-      for (let m = 0; m < b.length; m++) {
-        if (taken[m]) continue;
-        const dd = Math.abs(b[m].dist - a[k].dist) / a[k].dist;
-        const da = Math.abs(b[m].angle - a[k].angle);
-        if (dd > relDist || da > maxDAngle) continue;
-        const score = dd / relDist + da / maxDAngle;
-        if (score < bestScore) {
-          bestScore = score;
-          best = m;
+  for (let g = 1; g <= Math.min(maxGap, n - 1); g++) {
+    for (let i = 0; i < n; i++) {
+      const a = bins[i];
+      const j = (i + g) % n;
+      const b = bins[j];
+      for (let k = 0; k < a.length; k++) {
+        if (next[i][k] >= 0) continue;
+        let best = -1;
+        let bestScore = Infinity;
+        for (let m = 0; m < b.length; m++) {
+          if (hasPrev[j][m]) continue;
+          const dd = Math.abs(b[m].dist - a[k].dist) / a[k].dist;
+          const da = Math.abs(b[m].angle - a[k].angle);
+          if (dd > relDist || da > maxDAngle) continue;
+          const score = dd / relDist + da / maxDAngle;
+          if (score < bestScore) {
+            bestScore = score;
+            best = m;
+          }
         }
-      }
-      if (best >= 0) {
-        taken[best] = 1;
-        next[i][k] = best;
-        hasPrev[j][best] = 1;
+        if (best >= 0) {
+          next[i][k] = best;
+          gap[i][k] = g;
+          hasPrev[j][best] = 1;
+        }
       }
     }
   }
@@ -129,7 +135,7 @@ export function linkRidges(
       visited[i][k] = 1;
       pts.push(i * azStep, bins[i][k].angle, bins[i][k].dist);
       const nk = next[i][k];
-      i = (i + 1) % n;
+      i = (i + gap[i][k]) % n;
       k = nk;
     }
   };
@@ -141,6 +147,31 @@ export function linkRidges(
         walk(i, k);
       }
     }
+  }
+  offsets.push(pts.length / 3);
+  return { points: new Float32Array(pts), offsets: new Uint32Array(offsets) };
+}
+
+/**
+ * Verwirft kurze Linienstücke (Azimut-Spanne < `minSpan` Grad): meist Geländerauschen
+ * in der Ferne. Stücke der Silhouette vor dem Himmel bleiben.
+ */
+export function pruneLines(lines: Polylines, horizon: ArrayLike<number>, azStep: number, minSpan = 0.8): Polylines {
+  const { points: p, offsets: off } = lines;
+  const n = horizon.length;
+  const pts: number[] = [];
+  const offsets: number[] = [];
+  for (let l = 0; l + 1 < off.length; l++) {
+    const a = off[l];
+    const b = off[l + 1];
+    const span = (((p[(b - 1) * 3] - p[a * 3]) % 360) + 360) % 360;
+    let keep = span >= minSpan - 1e-6;
+    for (let k = a; !keep && k < b; k++) {
+      keep = p[k * 3 + 1] >= horizon[Math.round(p[k * 3] / azStep) % n] - 1e-3;
+    }
+    if (!keep) continue;
+    offsets.push(pts.length / 3);
+    for (let k = a * 3; k < b * 3; k++) pts.push(p[k]);
   }
   offsets.push(pts.length / 3);
   return { points: new Float32Array(pts), offsets: new Uint32Array(offsets) };
@@ -189,4 +220,22 @@ export function occlusionAngle(
     if (!Number.isNaN(h)) maxA = Math.max(maxA, elevationAngle(h0, h, d));
   }
   return maxA;
+}
+
+/**
+ * Wie weit ein Punkt (az, angle) über die Silhouette in seiner Umgebung hinausragt:
+ * Abstand zum tiefsten Silhouettenpunkt links bzw. rechts innerhalb ±`width` Grad,
+ * der kleinere der beiden Werte (ein Gipfel braucht Abfall nach beiden Seiten).
+ */
+export function skylineRelief(horizon: ArrayLike<number>, azStep: number, az: number, angle: number, width = 1.5): number {
+  const n = horizon.length;
+  const c = Math.round(az / azStep);
+  const k = Math.round(width / azStep);
+  let left = Infinity;
+  let right = Infinity;
+  for (let i = 1; i <= k; i++) {
+    left = Math.min(left, horizon[(((c - i) % n) + n) % n]);
+    right = Math.min(right, horizon[(c + i) % n]);
+  }
+  return Math.max(0, Math.min(angle - left, angle - right));
 }

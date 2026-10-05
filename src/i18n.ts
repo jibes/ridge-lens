@@ -27,6 +27,7 @@ const de = {
   'settings.langAuto': 'Automatisch (System)',
   'settings.compute': 'Panorama berechnen',
   'settings.resetOffset': 'Kompass-Korrektur zurücksetzen',
+  'settings.declination': 'Missweisung {d}° (WMM2025) wird automatisch berücksichtigt.',
   'settings.install': 'App installieren',
   'settings.noise': 'Sensorrauschen (Handy ruhig halten): Kurs ±{h}°, Neigung ±{p}°, Rolle ±{r}°',
   'settings.help':
@@ -103,6 +104,7 @@ const en: Dict = {
   'settings.langAuto': 'Automatic (system)',
   'settings.compute': 'Compute panorama',
   'settings.resetOffset': 'Reset compass correction',
+  'settings.declination': 'Magnetic declination {d}° (WMM2025) is applied automatically.',
   'settings.install': 'Install app',
   'settings.noise': 'Sensor noise (hold phone still): heading ±{h}°, pitch ±{p}°, roll ±{r}°',
   'settings.help':
@@ -175,6 +177,7 @@ const fr: Dict = {
   'settings.langAuto': 'Automatique (système)',
   'settings.compute': 'Calculer le panorama',
   'settings.resetOffset': 'Réinitialiser la correction de boussole',
+  'settings.declination': 'Déclinaison magnétique {d}° (WMM2025) prise en compte automatiquement.',
   'settings.install': 'Installer l’app',
   'settings.noise': 'Bruit des capteurs (tenir immobile) : cap ±{h}°, tangage ±{p}°, roulis ±{r}°',
   'settings.help':
@@ -247,6 +250,7 @@ const it: Dict = {
   'settings.langAuto': 'Automatica (sistema)',
   'settings.compute': 'Calcola panorama',
   'settings.resetOffset': 'Azzera correzione bussola',
+  'settings.declination': 'Declinazione magnetica {d}° (WMM2025) applicata automaticamente.',
   'settings.install': 'Installa app',
   'settings.noise': 'Rumore sensori (tieni fermo il telefono): rotta ±{h}°, beccheggio ±{p}°, rollio ±{r}°',
   'settings.help':

@@ -252,6 +252,16 @@ function drawCrosshair(ctx: CanvasRenderingContext2D, cam: Camera, pal: Palette)
   ctx.restore();
 }
 
+/**
+ * Bekanntheit eines Gipfels fürs Ausdünnen der Labels: Wikipedia-Sprachversionen
+ * (≥ 64 ≈ Matterhorn zählt voll), Hervortreten über die Silhouette, Höhe.
+ */
+export function labelScore(p: Peak): number {
+  const fame = Math.min(1, Math.log2(1 + p.fame) / 6);
+  const relief = Math.min(1, p.relief / 1.5);
+  return 1.5 * fame + relief + (0.5 * p.ele) / 4000;
+}
+
 function drawPeaks(
   ctx: CanvasRenderingContext2D,
   cam: Camera,
@@ -270,9 +280,9 @@ function drawPeaks(
     if (!p || p[0] < -20 || p[0] > cam.width + 20 || p[1] < labelTop || p[1] > cam.height) continue;
     cands.push({ peak, x: p[0], y: p[1] });
   }
-  // Priorität: ausgewählt, sichtbar vor verdeckt, dann Höhe
+  // Priorität: ausgewählt, sichtbar vor verdeckt, dann Bekanntheit
   const rank = (l: PlacedLabel) => (l.peak.id === opts.selectedPeakId ? 2 : l.peak.visible ? 1 : 0);
-  cands.sort((a, b) => rank(b) - rank(a) || b.peak.ele - a.peak.ele);
+  cands.sort((a, b) => rank(b) - rank(a) || labelScore(b.peak) - labelScore(a.peak));
   const placed: PlacedLabel[] = [];
   const minGap = 18;
   for (const c of cands) {

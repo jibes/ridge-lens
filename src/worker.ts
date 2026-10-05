@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 import { Dem, fetchTerrariumTile, metersPerPixel } from './dem';
 import { bearing, distance, elevationAngle, type LatLon } from './geo';
-import { castRay, extractRidges, linkRidges, observerGround, occlusionAngle, type RayOptions, type RidgePoint, type Sampler } from './panorama';
+import { castRay, extractRidges, linkRidges, observerGround, occlusionAngle, pruneLines, skylineRelief, type RayOptions, type RidgePoint, type Sampler } from './panorama';
 import { loadPeakTiles, tilesFor, type PeakRaw, type PeakTile } from './peaks';
 import type { Key } from './i18n';
 import type { ComputeRequest, PanoramaResult, Peak, PeakTileProgress, WorkerMessage } from './protocol';
@@ -100,7 +100,8 @@ async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?
     bins.push(ridges);
     horizon[i] = hz;
   }
-  const lines = linkRidges(bins, AZ_STEP);
+  // Lücken überbrücken, kurze Stücke (Rauschen in der Ferne) verwerfen
+  const lines = pruneLines(linkRidges(bins, AZ_STEP), horizon, AZ_STEP);
 
   /** Lage, Höhe und Sichtbarkeit je Gipfel. */
   const process = (list: PeakRaw[]): Peak[] => {
@@ -116,7 +117,9 @@ async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?
       const az = bearing(observer, p);
       const angle = elevationAngle(h0, ele, dist);
       const occ = occlusionAngle(sample, observer, h0, az, dist, rayOpts);
-      out.push({ id: p.id, name: p.name, names: p.names, lat: p.lat, lon: p.lon, ele, eleFromOsm: useOsm, dist, az, angle, visible: angle >= occ - 0.05 });
+      const visible = angle >= occ - 0.05;
+      const relief = visible ? skylineRelief(horizon, AZ_STEP, az, angle) : 0;
+      out.push({ id: p.id, name: p.name, names: p.names, lat: p.lat, lon: p.lon, ele, eleFromOsm: useOsm, fame: p.fame, dist, az, angle, visible, relief });
     }
     return out;
   };
@@ -134,7 +137,8 @@ async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?
     demElevation,
     h0,
     azStep: AZ_STEP,
-    horizon,
+    // Kopie: das Original wird übertragen, nachgelieferte Gipfel brauchen es noch (skylineRelief)
+    horizon: horizon.slice(),
     linePoints: lines.points,
     lineOffsets: lines.offsets,
     peaks: process(raw),

@@ -1,5 +1,6 @@
 import { deltaDeg, normalizeDeg } from './geo';
 import { OrientationTracker } from './orientation';
+import { decimalYear, declination as magneticDeclination } from './magnetic';
 import type { Camera } from './projection';
 import type { ComputeRequest, PanoramaResult, Peak, WorkerMessage } from './protocol';
 import { applyDom, compassLabels, detectLang, lang, setLang, storedLangChoice, storeLangChoice, t, type Lang } from './i18n';
@@ -90,12 +91,19 @@ const tracker = new OrientationTracker(() => {
 });
 let sensorOn = false;
 const OFFSET_KEY = 'ridge-lens-offset';
+/** Ältere Korrekturen (ohne `v: 2`) enthalten die Missweisung noch; wird beim ersten Standort abgezogen. */
+let legacyOffset = false;
 const offset = loadOffset();
+/** Magnetische Missweisung am Standort (Grad, Ost positiv). */
+let declination = 0;
 
 function loadOffset(): { heading: number; pitch: number } {
   try {
     const o = JSON.parse(localStorage.getItem(OFFSET_KEY) ?? '');
-    if (Number.isFinite(o.heading) && Number.isFinite(o.pitch)) return o;
+    if (Number.isFinite(o.heading) && Number.isFinite(o.pitch)) {
+      legacyOffset = o.v !== 2 && o.heading !== 0;
+      return { heading: o.heading, pitch: o.pitch };
+    }
   } catch {
     /* kein gespeicherter Offset */
   }
@@ -104,7 +112,7 @@ function loadOffset(): { heading: number; pitch: number } {
 
 function saveOffset() {
   try {
-    localStorage.setItem(OFFSET_KEY, JSON.stringify(offset));
+    localStorage.setItem(OFFSET_KEY, JSON.stringify({ ...offset, v: 2 }));
   } catch {
     /* privater Modus o. ä. */
   }
@@ -267,6 +275,7 @@ function compute() {
   busy = true;
   setStatus(() => t('status.start'));
   writeHash();
+  updateDeclination(lat, lon);
   worker.postMessage(req);
 }
 
@@ -479,7 +488,7 @@ alignApply.addEventListener('click', () => {
   const a = tracker.angles;
   if (sensorOn && a) {
     // Korrektur so, dass der Gipfel genau im Fadenkreuz liegt
-    offset.heading = deltaDeg(selected.az, a.heading);
+    offset.heading = deltaDeg(selected.az, trueHeading(a.heading));
     offset.pitch = Math.max(-20, Math.min(20, selected.angle - a.pitch));
     saveOffset();
     const peak = selected;
@@ -506,6 +515,26 @@ function fmtSigned(v: number, digits = 1): string {
   return `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(digits)}`;
 }
 
+/** Kompasskurs → geografischer Kurs (ohne Nordbezug keine Missweisung). */
+function trueHeading(heading: number): number {
+  return tracker.status === 'absolute' ? heading + declination : heading;
+}
+
+const declinationEl = $<HTMLParagraphElement>('declination');
+function updateDeclination(lat: number, lon: number) {
+  declination = magneticDeclination(lat, lon, decimalYear(new Date()));
+  if (legacyOffset) {
+    offset.heading = deltaDeg(offset.heading - declination, 0);
+    legacyOffset = false;
+    saveOffset();
+  }
+  declinationEl.hidden = false;
+  showDeclination();
+}
+function showDeclination() {
+  declinationEl.textContent = t('settings.declination', { d: fmtSigned(declination) });
+}
+
 /** Übernimmt Sensorwerte + Korrektur in die Kamera. */
 function syncSensor() {
   const a = sensorOn ? tracker.angles : null;
@@ -513,7 +542,7 @@ function syncSensor() {
     cam.roll = 0;
     return;
   }
-  cam.heading = normalizeDeg(a.heading + offset.heading);
+  cam.heading = normalizeDeg(trueHeading(a.heading) + offset.heading);
   cam.pitch = a.pitch + offset.pitch;
   cam.roll = a.roll;
   const dir = compassLabels(16)[Math.round(cam.heading / 22.5) % 16];
@@ -778,6 +807,7 @@ function applyLang(choice: Lang | 'auto') {
   langSel.value = choice;
   applyDom();
   setStatus(baseStatus);
+  showDeclination();
   updateAlignBar();
   requestRender();
 }
