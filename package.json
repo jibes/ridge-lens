@@ -1,0 +1,28 @@
+{
+  "name": "ridge-lens",
+  "version": "0.1.0",
+  "description": "Bergpanorama mit Gipfelnamen im Browser",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jibes/ridge-lens.git"
+  },
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/jibes/ridge-lens/issues"
+  },
+  "homepage": "https://github.com/jibes/ridge-lens#readme",
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.2",
+    "vitest": "^5.0.3"
+  },
+  "private": true,
+  "type": "module"
+}

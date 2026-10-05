@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Ridge Lens</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <header>
+      <form id="form">
+        <label>Ort
+          <select id="preset">
+            <option value="">– eigener –</option>
+          </select>
+        </label>
+        <label>Breite <input id="lat" type="number" step="any" required /></label>
+        <label>Länge <input id="lon" type="number" step="any" required /></label>
+        <label title="Leer = aus Höhenmodell">Höhe m <input id="ele" type="number" step="any" placeholder="auto" /></label>
+        <label>Sichtweite km <input id="radius" type="number" min="10" max="250" step="10" value="100" /></label>
+        <button type="button" id="gps">GPS</button>
+        <button type="submit">Berechnen</button>
+        <label class="check"><input id="hidden" type="checkbox" /> verdeckte Gipfel</label>
+      </form>
+      <div id="status">Bereit.</div>
+    </header>
+    <main>
+      <canvas id="view"></canvas>
+      <canvas id="overview" height="56"></canvas>
+    </main>
+    <footer>
+      Ziehen = drehen/neigen · Mausrad/Pinch = Zoom ·
+      Höhendaten: <a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md" target="_blank" rel="noopener">AWS Terrain Tiles</a> ·
+      Gipfel: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>-Mitwirkende
+    </footer>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
