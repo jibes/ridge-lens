@@ -82,7 +82,9 @@ export class OrientationTracker {
   private filtered: ViewAngles | null = null;
   /** iOS: α_abs = α + iosOffset (Einheitsvektor für Kreismittel) */
   private iosOffset: [number, number] | null = null;
-  private lastAbsolute = 0;
+  private lastAbsolute = -Infinity;
+  private lastRelative = -Infinity;
+  private fusion = new HeadingFusion();
   private handler = (e: Event) => this.onEvent(e as WebkitOrientationEvent);
   status: OrientationStatus | null = null;
 
@@ -120,35 +122,93 @@ export class OrientationTracker {
 
   private onEvent(e: WebkitOrientationEvent): void {
     if (e.alpha === null || e.beta === null || e.gamma === null) return;
-    let alpha = e.alpha;
-    if (e.type === 'deviceorientationabsolute' || e.absolute) {
-      // Wechsel von relativ auf absolut: alte Glättung verwerfen
-      if (this.status === 'relative') this.smoother.reset();
-      this.lastAbsolute = e.timeStamp;
-      this.status = 'absolute';
-    } else {
-      // Relatives Event ignorieren, solange absolute geliefert werden
-      if (e.timeStamp - this.lastAbsolute < 1000) return;
-      if (typeof e.webkitCompassHeading === 'number' && (e.webkitCompassAccuracy ?? 0) >= 0) {
-        // heading = −α_abs  ⇒  Offset = −heading − α
-        const off = (-e.webkitCompassHeading - alpha) * RAD;
-        const k = this.iosOffset ? 0.05 : 1;
-        const prev = this.iosOffset ?? [0, 0];
-        this.iosOffset = [prev[0] + (Math.cos(off) - prev[0]) * k, prev[1] + (Math.sin(off) - prev[1]) * k];
-      }
-      if (this.iosOffset) {
-        alpha += Math.atan2(this.iosOffset[1], this.iosOffset[0]) * DEG;
-        this.status = 'absolute';
-      } else {
-        this.status = 'relative';
-      }
-    }
+    const t = e.timeStamp;
     const angle = screen.orientation?.angle ?? (window as unknown as { orientation?: number }).orientation ?? 0;
-    const v = deviceVectors(alpha, e.beta, e.gamma, angle);
-    const raw = viewAngles(v.f, v.r);
-    this.noiseMeter.add(raw, e.timeStamp);
-    this.filtered = this.smoother.update(raw, e.timeStamp);
+    const anglesFor = (alpha: number) => {
+      const v = deviceVectors(alpha, e.beta!, e.gamma!, angle);
+      return viewAngles(v.f, v.r);
+    };
+
+    if (e.type === 'deviceorientationabsolute' || e.absolute) {
+      // Kompass-Ausrichtung (Magnetometer): verrauscht, aber nordbezogen
+      if (this.status === 'relative') this.smoother.reset();
+      this.lastAbsolute = t;
+      this.status = 'absolute';
+      const abs = anglesFor(e.alpha);
+      this.fusion.absolute(abs.heading, t);
+      // Liefert der Browser parallel Gyro-Daten, steuern diese den Blick (siehe unten)
+      if (t - this.lastRelative < 300 && this.fusion.ready) return;
+      this.emit(abs, t);
+      return;
+    }
+
+    if (typeof e.webkitCompassHeading === 'number' && (e.webkitCompassAccuracy ?? 0) >= 0) {
+      // iOS: α relativ (Gyro), Nordbezug über webkitCompassHeading als langsam gemittelte Konstante
+      // heading = −α_abs  ⇒  Offset = −heading − α
+      const off = (-e.webkitCompassHeading - e.alpha) * RAD;
+      const k = this.iosOffset ? 0.05 : 1;
+      const prev = this.iosOffset ?? [0, 0];
+      this.iosOffset = [prev[0] + (Math.cos(off) - prev[0]) * k, prev[1] + (Math.sin(off) - prev[1]) * k];
+      this.status = 'absolute';
+      this.emit(anglesFor(e.alpha + Math.atan2(this.iosOffset[1], this.iosOffset[0]) * DEG), t);
+      return;
+    }
+
+    // Relative Ausrichtung (Android: Gyro + Beschleunigung, ohne Magnetometer): ruhig, Nord unbekannt
+    this.lastRelative = t;
+    const rel = anglesFor(e.alpha);
+    if (t - this.lastAbsolute < 2000) {
+      // Gyro-Kurs + langsam nachgeführter Kompass-Offset
+      const heading = this.fusion.relative(rel.heading, t);
+      if (heading !== null) this.emit({ ...rel, heading }, t, true);
+      return;
+    }
+    this.status = 'relative';
+    this.emit(rel, t);
+  }
+
+  private emit(raw: ViewAngles, t: number, fused = false): void {
+    this.smoother.setHeadingSource(fused);
+    this.noiseMeter.add(raw, t);
+    this.filtered = this.smoother.update(raw, t);
     this.onChange();
+  }
+}
+
+/**
+ * Sensorfusion für den Kurs: Der Gyro-Kurs (relativ, ruhig, driftet langsam) wird
+ * über einen Offset an den Kompass-Kurs (absolut, verrauscht) gebunden. Der Offset
+ * folgt dem Kompass mit Zeitkonstante `tauSec` – kurzfristig zählt der Gyro,
+ * langfristig der Kompass (Komplementärfilter).
+ */
+export class HeadingFusion {
+  private offset: number | null = null;
+  private offsetT = 0;
+  private rel: { heading: number; t: number } | null = null;
+
+  constructor(private tauSec = 4) {}
+
+  get ready(): boolean {
+    return this.offset !== null;
+  }
+
+  /** Kompass-Messung: zieht den Offset langsam auf (Kompass − Gyro). */
+  absolute(heading: number, t: number): void {
+    if (!this.rel || t - this.rel.t > 200) return;
+    const sample = deltaDeg(heading, this.rel.heading);
+    if (this.offset === null) {
+      this.offset = sample;
+    } else {
+      const dt = Math.min(1, Math.max(0, (t - this.offsetT) / 1000));
+      this.offset += deltaDeg(sample, this.offset) * (1 - Math.exp(-dt / this.tauSec));
+    }
+    this.offsetT = t;
+  }
+
+  /** Gyro-Messung: liefert den nordbezogenen Kurs, sobald ein Offset bekannt ist. */
+  relative(heading: number, t: number): number | null {
+    this.rel = { heading, t };
+    return this.offset === null ? null : (((heading + this.offset) % 360) + 360) % 360;
   }
 }
 
@@ -164,7 +224,7 @@ export class OneEuro {
   private t = 0;
 
   constructor(
-    private fcMin: number,
+    public fcMin: number,
     private beta: number,
     private dCutoff = 1,
   ) {}
@@ -207,6 +267,11 @@ export class AngleSmoother {
     this.pitch.reset();
     this.roll.reset();
     this.unwrapped = null;
+  }
+
+  /** Kurs aus Gyro-Fusion ist ruhig → weniger träge glätten; reiner Kompass → stark. */
+  setHeadingSource(fused: boolean): void {
+    this.heading.fcMin = fused ? 0.15 : 0.06;
   }
 
   update(raw: ViewAngles, timeMs: number): ViewAngles {

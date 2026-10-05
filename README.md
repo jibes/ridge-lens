@@ -42,7 +42,7 @@ Kompass korrigieren:
 
 Die Korrektur bleibt im Browser gespeichert. Sie enthält auch die magnetische Missweisung (Alpen ≈ +3°), die Handy-Kompasse nicht abziehen.
 
-Technik (`src/orientation.ts`): Rotationsmatrix aus α/β/γ (W3C), Blickachse = −z des Geräts, Rolle relativ zum Horizont, Bildschirmdrehung (Querformat) berücksichtigt. Android: `deviceorientationabsolute`; iOS: relatives α plus `webkitCompassHeading` als geglätteter Nordbezug. One-Euro-Filter je Achse (Kurs am trägsten, da Magnetometer am stärksten rauscht): ±2° Rauschen → ±0,2°, Schwenk mit 60°/s nach 0,4 s eingeholt; Kurs ohne 0°/360°-Sprung gefiltert. Einstellungen zeigen das Rohrauschen je Achse (Diagnose).
+Technik (`src/orientation.ts`): Rotationsmatrix aus α/β/γ (W3C), Blickachse = −z des Geräts, Rolle relativ zum Horizont, Bildschirmdrehung (Querformat) berücksichtigt. Kurs per Sensorfusion (Komplementärfilter, `HeadingFusion`): Der ruhige Gyro-Kurs (Android: relatives `deviceorientation`; iOS: relatives α) bestimmt die Bewegung, der verrauschte Kompass (`deviceorientationabsolute` bzw. `webkitCompassHeading`) nur langsam (τ ≈ 4 s) den Nordbezug. Ohne Gyro-Strom wird der Kompass direkt genutzt. Danach One-Euro-Filter je Achse (reiner Kompass-Kurs am trägsten). Einstellungen zeigen das Rauschen je Achse (Diagnose); gemessen am Handy: Kompass ±0,4–0,8°, Neigung/Rolle ≤ 0,1°.
 
 ## Funktionsweise
 

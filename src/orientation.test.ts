@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AngleSmoother, deviceVectors, rotationMatrix, viewAngles } from './orientation';
+import { AngleSmoother, deviceVectors, HeadingFusion, rotationMatrix, viewAngles } from './orientation';
 
 const angles = (a: number, b: number, g: number, screen = 0) => {
   const { f, r } = deviceVectors(a, b, g, screen);
@@ -108,3 +108,43 @@ describe('AngleSmoother', () => {
     expect(Math.min(out.heading, 360 - out.heading)).toBeLessThan(0.6);
   });
 });
+
+describe('HeadingFusion', () => {
+  it('gyro smoothness with compass reference, despite gyro offset and drift', () => {
+    let seed = 7;
+    const noise = (amp: number) => {
+      seed = (seed * 16807) % 2147483647;
+      return ((seed / 2147483647) * 2 - 1) * amp;
+    };
+    const fusion = new HeadingFusion(4);
+    const step = 1000 / 60;
+    let maxErr = 0;
+    let maxJump = 0;
+    let prev: number | null = null;
+    for (let i = 0; i < 60 * 30; i++) {
+      const t = i * step;
+      const truth = 120 + 10 * Math.sin(t / 3000); // langsames Schwenken
+      // Gyro: beliebiger Nullpunkt (+37°), Drift 0,5°/min, kaum Rauschen
+      const gyro = truth + 37 + (t / 60000) * 0.5 + noise(0.05);
+      const out = fusion.relative((gyro + 360) % 360, t);
+      // Kompass: korrekt, aber ±2° Rauschen
+      fusion.absolute(truth + noise(2), t + 1);
+      if (out !== null && t > 15000) {
+        maxErr = Math.max(maxErr, Math.abs(out - truth));
+        if (prev !== null) maxJump = Math.max(maxJump, Math.abs(out - prev - (truth - (120 + 10 * Math.sin((t - step) / 3000)))));
+        prev = out;
+      }
+    }
+    expect(maxErr).toBeLessThan(0.6);
+    // Bild-zu-Bild-Zittern weit unter dem Kompassrauschen
+    expect(maxJump).toBeLessThan(0.15);
+  });
+
+  it('is not ready before both streams were seen', () => {
+    const f = new HeadingFusion();
+    expect(f.relative(10, 0)).toBeNull();
+    f.absolute(50, 10);
+    expect(f.relative(10, 20)).toBeCloseTo(50, 6);
+  });
+});
+
