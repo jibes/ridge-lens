@@ -14,9 +14,11 @@ permissions:
   pages: write
   id-token: write
 
+# Übersprungene Läufe (Datensatz-Lauf ohne Erfolg) bekommen eine eigene Gruppe, sonst
+# verdrängen sie einen wartenden echten Deploy. Laufende Deploys nicht abbrechen.
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success' && format('pages-skip-{0}', github.run_id) || 'pages' }}
+  cancel-in-progress: false
 
 jobs:
   build:
