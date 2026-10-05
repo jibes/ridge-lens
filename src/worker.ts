@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 import { Dem, fetchTerrariumTile, metersPerPixel } from './dem';
 import { bearing, distance, elevationAngle, type LatLon } from './geo';
-import { castRay, extractRidges, linkRidges, occlusionAngle, type RayOptions, type RidgePoint, type Sampler } from './panorama';
+import { castRay, extractRidges, linkRidges, observerGround, occlusionAngle, type RayOptions, type RidgePoint, type Sampler } from './panorama';
 import { fetchPeaks } from './peaks';
 import type { ComputeRequest, PanoramaResult, Peak, WorkerMessage } from './protocol';
 
@@ -50,8 +50,16 @@ async function compute(req: ComputeRequest): Promise<PanoramaResult> {
     return far.elevation(lat, lon);
   };
 
+  post({ type: 'progress', text: 'Lade Gipfel …' });
+  const { peaks: raw, error: peakError } = await peaksPromise;
+
   const demElevation = near.elevation(req.lat, req.lon);
-  const ground = req.groundElevation ?? demElevation;
+  // Auf einem Gipfel (OSM-Gipfel < 80 m entfernt) dessen Höhe nehmen: das DEM liegt dort oft 30–60 m zu tief
+  const summit = raw
+    .filter((p) => p.ele !== null && distance(observer, p) < 80)
+    .sort((a, b) => distance(observer, a) - distance(observer, b))[0];
+  const terrain = observerGround(sample, observer);
+  const ground = req.groundElevation ?? (summit ? Math.max(summit.ele!, terrain) : terrain);
   if (Number.isNaN(ground)) throw new Error('Keine Höhendaten am Standort');
   const h0 = ground + req.eyeHeight;
 
@@ -77,8 +85,6 @@ async function compute(req: ComputeRequest): Promise<PanoramaResult> {
   }
   const lines = linkRidges(bins, AZ_STEP);
 
-  post({ type: 'progress', text: 'Lade Gipfel …' });
-  const { peaks: raw, error: peakError } = await peaksPromise;
   const peaks: Peak[] = [];
   for (const p of raw) {
     const dist = distance(observer, p);

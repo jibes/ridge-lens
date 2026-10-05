@@ -49,7 +49,7 @@ Technik (`src/orientation.ts`): Rotationsmatrix aus α/β/γ (W3C), Blickachse =
 
 ## Bekannte Grenzen
 
-- DEM glättet Gipfel: auf einem Gipfel liegt die DEM-Höhe oft 30–60 m zu tief (Rigi: 1743 statt 1797 m). Für Gipfelstandorte Höhe manuell eintragen, sonst verdeckt das nahe Gelände den Blick.
+- DEM glättet Gipfel (Rigi: max. 1758 statt 1797 m). Abhilfe: Liegt ein OSM-Gipfel mit Höhe < 80 m entfernt, gilt dessen Höhe; sonst, falls das Gelände ringsum abfällt, die höchste DEM-Stelle im Umkreis von 40 m. GPS-Höhe wird nicht verwendet (ellipsoidisch, in der Schweiz ≈ 50 m zu hoch). Manuelle Höhe in den Einstellungen hat Vorrang.
 - Kammlinien enthalten noch kurze Fragmente; Gipfel-Labels werden nur nach Höhe ausgedünnt.
 
 ## Nächste Stufen

@@ -146,6 +146,32 @@ export function linkRidges(
   return { points: new Float32Array(pts), offsets: new Uint32Array(offsets) };
 }
 
+/**
+ * Bodenhöhe des Beobachters. Das Höhenmodell glättet Gipfel und Grate, dort
+ * liegt der Wert oft Dutzende Meter zu tief und das eigene Gelände verdeckt
+ * die Sicht. Fällt das Gelände ringsum (≥ 6 von 8 Richtungen in 60 m tiefer),
+ * gilt der Standort als Gipfel/Grat und die höchste Stelle im Umkreis von 40 m zählt.
+ */
+export function observerGround(sample: Sampler, observer: LatLon): number {
+  const center = sample(observer.lat, observer.lon, 0);
+  if (Number.isNaN(center)) return center;
+  const dirs = Array.from({ length: 8 }, (_, i) => i * 45);
+  const lower = dirs.filter((az) => {
+    const p = destination(observer, az, 60);
+    return sample(p.lat, p.lon, 60) < center - 1;
+  }).length;
+  if (lower < 6) return center;
+  let max = center;
+  for (const r of [10, 20, 30, 40]) {
+    for (const az of dirs) {
+      const p = destination(observer, az, r);
+      const h = sample(p.lat, p.lon, r);
+      if (h > max) max = h;
+    }
+  }
+  return max;
+}
+
 /** Maximaler Höhenwinkel des Geländes zwischen Beobachter und Ziel. */
 export function occlusionAngle(
   sample: Sampler,

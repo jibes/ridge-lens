@@ -56,7 +56,8 @@ const sensorText = $<HTMLSpanElement>('sensor-text');
 const viewCtx = view.getContext('2d')!;
 const overCtx = overview.getContext('2d')!;
 
-const cam: Camera = { heading: 180, pitch: 2, roll: 0, hfov: 60, width: 0, height: 0 };
+// Standard-Sichtfeld: Hochformat schmaler, damit Gipfel nicht winzig wirken
+const cam: Camera = { heading: 180, pitch: 2, roll: 0, hfov: innerWidth < innerHeight ? 35 : 45, width: 0, height: 0 };
 let pano: PanoramaResult | null = null;
 let labels: PlacedLabel[] = [];
 let busy = false;
@@ -244,10 +245,8 @@ function locate(): Promise<string | null> {
       (pos) => {
         latIn.value = pos.coords.latitude.toFixed(5);
         lonIn.value = pos.coords.longitude.toFixed(5);
-        // GPS-Höhe nur bei guter Genauigkeit, sonst Höhenmodell
-        const alt = pos.coords.altitude;
-        const acc = pos.coords.altitudeAccuracy;
-        eleIn.value = alt !== null && acc !== null && acc < 15 ? alt.toFixed(0) : '';
+        // GPS-Höhe ist ellipsoidisch (CH ≈ 50 m über Meereshöhe) → Höhenmodell verwenden
+        eleIn.value = '';
         presetSel.value = '';
         resolve(null);
       },

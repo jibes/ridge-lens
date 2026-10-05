@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { castRay, extractRidges, linkRidges, occlusionAngle, type RidgePoint } from './panorama';
+import { castRay, extractRidges, linkRidges, observerGround, occlusionAngle, type RidgePoint, type Sampler } from './panorama';
 
 describe('extractRidges', () => {
   it('finds front ridge and skyline', () => {
@@ -66,5 +66,27 @@ describe('ray casting', () => {
     expect(occ).toBeGreaterThan(9);
     const occFront = occlusionAngle(sample, observer, 502, 0, 4000, opts);
     expect(occFront).toBeLessThan(0.1);
+  });
+});
+
+describe('observerGround', () => {
+  const observer = { lat: 46, lon: 8 };
+  const m = 111_195; // Meter pro Breitengrad
+
+  it('takes nearby summit when standing just below it', () => {
+    // Kegel: Spitze 30 m nördlich, 2000 m, Neigung 0.5
+    const top = { lat: 46 + 30 / m, lon: 8 };
+    const cone: Sampler = (lat, lon) => {
+      const dy = (lat - top.lat) * m;
+      const dx = (lon - top.lon) * m * Math.cos((46 * Math.PI) / 180);
+      return 2000 - 0.5 * Math.hypot(dx, dy);
+    };
+    expect(cone(46, 8, 0)).toBeCloseTo(1985, 0);
+    expect(observerGround(cone, observer)).toBeGreaterThan(1998);
+  });
+
+  it('keeps DEM value on a plain slope', () => {
+    const slope: Sampler = (lat) => 1000 + (lat - 46) * m * 0.5;
+    expect(observerGround(slope, observer)).toBeCloseTo(1000, 6);
   });
 });
