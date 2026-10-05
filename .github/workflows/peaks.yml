@@ -1,0 +1,55 @@
+name: Build peak dataset
+
+# Gipfel-Datensatz (OSM via Overpass) unabhängig vom Deploy erzeugen. Der Stand liegt
+# auf dem Branch peaks-data (ein einzelner Commit, Historie wächst nicht); jeder Lauf
+# holt fehlende und > 30 Tage alte Blöcke im Zeitbudget nach.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main, ccr-d1ee0c67-s1pl8d]
+    paths:
+      - scripts/build-peaks.mjs
+      - scripts/restore-peaks.sh
+      - .github/workflows/peaks.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: peaks
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Restore dataset
+        run: |
+          scripts/restore-peaks.sh public/peaks
+          sha1sum public/peaks/index.json > "$RUNNER_TEMP/index.sha" 2>/dev/null || true
+      - name: Fetch missing and outdated blocks
+        env:
+          PEAKS_BUDGET_MIN: 20
+        run: node scripts/build-peaks.mjs
+      - name: Publish to branch peaks-data
+        working-directory: public/peaks
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "${PEAKS_BOOTSTRAPPED:-}" ] && sha1sum -c --status "$RUNNER_TEMP/index.sha" 2>/dev/null; then
+            echo "Keine Änderungen"; exit 0
+          fi
+          git init -q
+          git checkout -q -b peaks-data
+          git add -A
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -qm "Gipfel-Datensatz $(date -u +%FT%RZ)"
+          git push -qf "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" peaks-data
+          echo "Veröffentlicht: $(jq '.blocks | length' index.json) Blöcke"

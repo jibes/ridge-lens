@@ -18,7 +18,7 @@ const ENDPOINTS = [
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
 ];
-const CACHE_NAME = 'ridge-lens-peaks-v3';
+const CACHE_NAME = 'ridge-lens-peaks-v4';
 const NAME_LANGS: Lang[] = ['de', 'en', 'fr', 'it'];
 const TIMEOUT_MS = 30_000;
 
@@ -47,29 +47,40 @@ export function parseOverpassCsv(text: string): PeakRaw[] {
   return out;
 }
 
-/** Rechteck (S, W, N, O) um den Kreis, nach außen auf 0.05° gerundet: stabiler Cache-Schlüssel. */
-export function peakBBox(center: LatLon, radius: number): [number, number, number, number] {
-  const dLat = (radius + 1500) / 111_195;
-  const dLon = dLat / Math.cos((center.lat * Math.PI) / 180);
-  const down = (v: number) => Math.floor(v * 20) / 20;
-  const up = (v: number) => Math.ceil(v * 20) / 20;
-  return [down(center.lat - dLat), down(center.lon - dLon), up(center.lat + dLat), up(center.lon + dLon)];
-}
-
 /** Zeile im mitgelieferten Datensatz: [id, lat, lon, ele|null, name, de, en, fr, it]. */
 export type PeakRow = [number, number, number, number | null, string, string, string, string, string];
 
-export function rowsToPeaks(rows: PeakRow[], [s, w, n, e]: [number, number, number, number]): PeakRaw[] {
-  const out: PeakRaw[] = [];
-  for (const [id, lat, lon, ele, name, ...localized] of rows) {
-    if (lat < s || lat > n || lon < w || lon > e) continue;
+export function rowsToPeaks(rows: PeakRow[]): PeakRaw[] {
+  return rows.map(([id, lat, lon, ele, name, ...localized]) => {
     const names: PeakRaw['names'] = {};
     NAME_LANGS.forEach((l, i) => {
       if (localized[i]) names[l] = localized[i];
     });
-    out.push({ id, name, names, lat, lon, ele });
+    return { id, name, names, lat, lon, ele };
+  });
+}
+
+const RAD = Math.PI / 180;
+
+/** Kürzeste Distanz (m) vom Punkt zum 1°-Feld [lat, lat+1) × [lon, lon+1), flach genähert. */
+function distanceToTile(c: LatLon, lat: number, lon: number): number {
+  const dy = Math.max(lat - c.lat, 0, c.lat - (lat + 1)) * 111_195;
+  const dx = Math.max(lon - c.lon, 0, c.lon - (lon + 1)) * 111_195 * Math.cos(c.lat * RAD);
+  return Math.hypot(dx, dy);
+}
+
+/** 1°-Kacheln im Umkreis, sortiert nach Entfernung (eigene Kachel zuerst). */
+export function tilesFor(center: LatLon, radius: number): { lat: number; lon: number; dist: number }[] {
+  const dLat = radius / 111_195;
+  const dLon = dLat / Math.cos(center.lat * RAD);
+  const out: { lat: number; lon: number; dist: number }[] = [];
+  for (let lat = Math.floor(center.lat - dLat); lat <= Math.floor(center.lat + dLat); lat++) {
+    for (let lon = Math.floor(center.lon - dLon); lon <= Math.floor(center.lon + dLon); lon++) {
+      const dist = distanceToTile(center, lat, lon);
+      if (dist <= radius) out.push({ lat, lon, dist });
+    }
   }
-  return out;
+  return out.sort((a, b) => a.dist - b.dist);
 }
 
 interface DatasetIndex {
@@ -80,65 +91,43 @@ interface DatasetIndex {
   tiles: string[];
 }
 
-/**
- * Gipfel aus dem mit der App ausgelieferten Datensatz (1°-Kacheln, im CI aus OSM erzeugt).
- * Null, wenn kein Datensatz vorhanden oder das Rechteck nicht abgedeckt ist.
- */
-async function fetchBundledPeaks(bbox: [number, number, number, number]): Promise<PeakRaw[] | null> {
-  const base = new URL('../peaks/', import.meta.url);
-  const res = await fetch(new URL('index.json', base)).catch(() => null);
-  if (!res?.ok) return null;
-  const index = (await res.json().catch(() => null)) as DatasetIndex | null;
-  if (!index) return null;
-  const [s, w, n, e] = bbox;
-  const r = index.region;
-  if (s < r.south || n > r.north || w < r.west || e > r.east) return null;
-  // Nur verwenden, wenn alle berührten Blöcke vollständig geladen sind
-  const B = index.blockSize;
-  const done = new Set(index.blocks);
-  for (let bs = r.south + Math.floor((s - r.south) / B) * B; bs < n; bs += B) {
-    for (let bw = r.west + Math.floor((w - r.west) / B) * B; bw < e; bw += B) {
-      if (!done.has(`${bs}_${bw}`)) return null;
-    }
-  }
-  const available = new Set(index.tiles);
-  const keys: string[] = [];
-  for (let lat = Math.floor(s); lat <= Math.floor(n); lat++) {
-    for (let lon = Math.floor(w); lon <= Math.floor(e); lon++) {
-      if (available.has(`${lat}_${lon}`)) keys.push(`${lat}_${lon}`);
-    }
-  }
-  const tiles = await Promise.all(
-    keys.map(async (k) => {
-      const tr = await fetch(new URL(`${k}.json`, base));
-      if (!tr.ok) throw new Error(`peaks/${k}.json HTTP ${tr.status}`);
-      return (await tr.json()) as PeakRow[];
-    }),
-  ).catch(() => null);
-  return tiles && rowsToPeaks(tiles.flat(), bbox);
+export interface PeakTile {
+  key: string;
+  peaks: PeakRaw[];
+  source: 'bundled' | 'cache' | 'overpass';
+  /** Technische Fehlerdetails, falls die Kachel nicht geladen werden konnte (peaks leer). */
+  error?: string;
 }
 
-/**
- * Benannte Gipfel im Rechteck um den Kreis: zuerst aus dem mitgelieferten Datensatz,
- * sonst live über Overpass (Rechteck ist dort deutlich billiger als `around`).
- */
-export async function fetchPeaks(center: LatLon, radius: number): Promise<PeakRaw[]> {
-  const box = peakBBox(center, radius);
-  const bundled = await fetchBundledPeaks(box);
-  if (bundled) return bundled;
+const TILE_MAX_AGE_MS = 30 * 86_400_000;
+const OVERPASS_PAUSE_MS = 2_000;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  const bbox = box.map((v) => v.toFixed(2)).join(',');
+/** Mitgelieferter Datensatz: Index einmal laden; null wenn nicht vorhanden. */
+async function loadIndex(base: URL): Promise<DatasetIndex | null> {
+  const res = await fetch(new URL('index.json', base)).catch(() => null);
+  if (!res?.ok) return null;
+  return (await res.json().catch(() => null)) as DatasetIndex | null;
+}
+
+/** Ob die Kachel im mitgelieferten Datensatz vollständig vorliegt. */
+function bundledCovers(index: DatasetIndex | null, lat: number, lon: number): boolean {
+  if (!index) return false;
+  const r = index.region;
+  if (lat < r.south || lat >= r.north || lon < r.west || lon >= r.east) return false;
+  const B = index.blockSize;
+  const bs = r.south + Math.floor((lat - r.south) / B) * B;
+  const bw = r.west + Math.floor((lon - r.west) / B) * B;
+  return index.blocks.includes(`${bs}_${bw}`);
+}
+
+/** Eine 1°-Kachel live von Overpass; Punkte auf der Nord-/Ostkante gehören zur Nachbarkachel. */
+async function fetchOverpassTile(lat: number, lon: number): Promise<PeakRaw[]> {
   const query =
     `[out:csv(::id,::lat,::lon,ele,name,${NAME_LANGS.map((l) => `"name:${l}"`).join(',')};false;"\t")]` +
-    `[timeout:60][bbox:${bbox}];` +
+    `[timeout:60][bbox:${lat},${lon},${lat + 1},${lon + 1}];` +
     `node["natural"="peak"]["name"];out qt;`;
   const qs = `?data=${encodeURIComponent(query)}`;
-
-  const cache = await caches.open(CACHE_NAME).catch(() => null);
-  const cacheKey = `https://ridge-lens.local/peaks?bbox=${bbox}`;
-  const hit = await cache?.match(cacheKey);
-  if (hit) return (await hit.json()) as PeakRaw[];
-
   const errors: string[] = [];
   for (const ep of ENDPOINTS) {
     try {
@@ -149,14 +138,61 @@ export async function fetchPeaks(center: LatLon, radius: number): Promise<PeakRa
       if (/<html|runtime error/i.test(text.slice(0, 500))) throw new Error('server error');
       const peaks = parseOverpassCsv(text);
       if (!peaks.length && text.trim() && !text.includes('\t')) throw new Error('bad response');
-      await cache
-        ?.put(cacheKey, new Response(JSON.stringify(peaks), { headers: { 'Content-Type': 'application/json' } }))
-        .catch(() => {});
-      return peaks;
+      return peaks.filter((p) => p.lat < lat + 1 && p.lon < lon + 1);
     } catch (e) {
       const msg = e instanceof Error ? (e.name === 'TimeoutError' ? 'timeout' : e.message) : String(e);
       errors.push(`${new URL(ep).hostname}: ${msg}`);
     }
   }
   throw new Error(errors.join('; '));
+}
+
+/**
+ * Gipfel kachelweise nach Entfernung: je Kachel aus dem mitgelieferten Datensatz,
+ * sonst aus dem Browser-Cache (30 Tage), sonst live von Overpass – nacheinander mit
+ * Pause, damit Overpass nicht drosselt. Eine gescheiterte Kachel wird mit `error`
+ * geliefert und beim nächsten Mal erneut versucht.
+ */
+export async function* loadPeakTiles(center: LatLon, radius: number): AsyncGenerator<PeakTile, void> {
+  const base = new URL('../peaks/', import.meta.url);
+  const index = await loadIndex(base);
+  const cache = await caches.open(CACHE_NAME).catch(() => null);
+  let lastNetwork = 0;
+  for (const { lat, lon } of tilesFor(center, radius)) {
+    const key = `${lat}_${lon}`;
+    if (bundledCovers(index, lat, lon)) {
+      // Leere Kacheln (Meer, Flachland) stehen nicht im Index
+      if (!index!.tiles.includes(key)) {
+        yield { key, peaks: [], source: 'bundled' };
+        continue;
+      }
+      const res = await fetch(new URL(`${key}.json`, base)).catch(() => null);
+      if (res?.ok) {
+        yield { key, peaks: rowsToPeaks((await res.json()) as PeakRow[]), source: 'bundled' };
+        continue;
+      }
+    }
+    const cacheKey = `https://ridge-lens.local/peak-tile/${key}`;
+    const hit = (await cache?.match(cacheKey)?.then((r) => r?.json()).catch(() => null)) as
+      | { t: number; peaks: PeakRaw[] }
+      | null
+      | undefined;
+    if (hit && Date.now() - hit.t < TILE_MAX_AGE_MS) {
+      yield { key, peaks: hit.peaks, source: 'cache' };
+      continue;
+    }
+    const wait = lastNetwork + OVERPASS_PAUSE_MS - Date.now();
+    if (wait > 0) await sleep(wait);
+    try {
+      const peaks = await fetchOverpassTile(lat, lon);
+      lastNetwork = Date.now();
+      await cache
+        ?.put(cacheKey, new Response(JSON.stringify({ t: Date.now(), peaks }), { headers: { 'Content-Type': 'application/json' } }))
+        .catch(() => {});
+      yield { key, peaks, source: 'overpass' };
+    } catch (e) {
+      lastNetwork = Date.now();
+      yield { key, peaks: [], source: 'overpass', error: e instanceof Error ? e.message : String(e) };
+    }
+  }
 }

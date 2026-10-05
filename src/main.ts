@@ -186,8 +186,37 @@ resizeObserver.observe(overview);
 // --- Berechnung -------------------------------------------------------------------
 
 const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
+let requestId = 0;
+
+/** Statuszeile nach der Berechnung; zählt nachgelieferte Gipfel mit. */
+function showResultStatus(result: PanoramaResult) {
+  setStatus(() => {
+    const { done, total, failed } = result.peakTiles;
+    return [
+      t('status.result', { ele: Math.round(result.h0), count: result.peaks.filter((p) => p.visible).length }),
+      done < total ? t('status.peakTiles', { done, total }) : '',
+      result.failedTiles ? t('status.tilesMissing', { n: result.failedTiles }) : '',
+      failed ? t('status.peakTilesFailed', { n: failed }) : '',
+      failed && result.peakError ? t('error.peaks', { detail: result.peakError }) : '',
+    ]
+      .filter(Boolean)
+      .join(' · ');
+  });
+}
+
 worker.onmessage = (ev: MessageEvent<WorkerMessage>) => {
   const msg = ev.data;
+  // Nachzügler einer früheren Berechnung (anderer Standort) verwerfen
+  if (msg.id !== requestId) return;
+  if (msg.type === 'peaks') {
+    if (!pano) return;
+    pano.peaks.push(...msg.peaks);
+    pano.peakTiles = msg.progress;
+    pano.peakError = msg.error;
+    showResultStatus(pano);
+    requestRender();
+    return;
+  }
   if (msg.type === 'progress') {
     setStatus(() => t(msg.key, msg.params));
     return;
@@ -197,20 +226,10 @@ worker.onmessage = (ev: MessageEvent<WorkerMessage>) => {
     setStatus(() => (msg.detail ? t('status.error', { msg: msg.detail }) : t(msg.key)));
     return;
   }
-  const result = msg.result;
-  pano = result;
+  pano = msg.result;
   selected = null;
   updateAlignBar();
-  const visible = result.peaks.filter((p) => p.visible).length;
-  setStatus(() =>
-    [
-      t('status.result', { ele: Math.round(result.h0), count: visible }),
-      result.failedTiles ? t('status.tilesMissing', { n: result.failedTiles }) : '',
-      result.peakError ? t('error.peaks', { detail: result.peakError }) : '',
-    ]
-      .filter(Boolean)
-      .join(' · '),
-  );
+  showResultStatus(pano);
   requestRender();
 };
 
@@ -223,6 +242,7 @@ function compute() {
     return;
   }
   const req: ComputeRequest = {
+    id: ++requestId,
     lat,
     lon,
     radius: Math.min(250, Math.max(10, Number(radiusIn.value) || 100)) * 1000,

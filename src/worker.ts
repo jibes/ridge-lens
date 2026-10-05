@@ -2,9 +2,9 @@
 import { Dem, fetchTerrariumTile, metersPerPixel } from './dem';
 import { bearing, distance, elevationAngle, type LatLon } from './geo';
 import { castRay, extractRidges, linkRidges, observerGround, occlusionAngle, type RayOptions, type RidgePoint, type Sampler } from './panorama';
-import { fetchPeaks } from './peaks';
+import { loadPeakTiles, tilesFor, type PeakRaw, type PeakTile } from './peaks';
 import type { Key } from './i18n';
-import type { ComputeRequest, PanoramaResult, Peak, WorkerMessage } from './protocol';
+import type { ComputeRequest, PanoramaResult, Peak, PeakTileProgress, WorkerMessage } from './protocol';
 
 /** Fehler mit Übersetzungsschlüssel; der Hauptthread formuliert die Meldung. */
 class KeyedError extends Error {
@@ -18,31 +18,37 @@ const NEAR_ZOOM = 12;
 const FAR_ZOOM = 10;
 const NEAR_RADIUS = 8000;
 
+/** Wartezeit auf die eigene Gipfelkachel (Gipfelhöhe als Standorthöhe), danach ohne weiter. */
+const FIRST_TILE_WAIT_MS = 8_000;
+
 declare const self: DedicatedWorkerGlobalScope;
-const post = (msg: WorkerMessage, transfer: Transferable[] = []) => self.postMessage(msg, transfer);
+let currentId = 0;
 
 self.onmessage = async (ev: MessageEvent<ComputeRequest>) => {
+  const id = (currentId = ev.data.id);
+  const post = (msg: WorkerMessage, transfer: Transferable[] = []) => self.postMessage(msg, transfer);
   try {
-    const result = await compute(ev.data);
-    post({ type: 'result', result }, [result.horizon.buffer, result.linePoints.buffer, result.lineOffsets.buffer]);
+    await compute(ev.data, post);
   } catch (e) {
-    if (e instanceof KeyedError) post({ type: 'error', key: e.key });
-    else post({ type: 'error', key: 'status.error', detail: e instanceof Error ? e.message : String(e) });
+    if (e instanceof KeyedError) post({ id, type: 'error', key: e.key });
+    else post({ id, type: 'error', key: 'status.error', detail: e instanceof Error ? e.message : String(e) });
   }
 };
 
-async function compute(req: ComputeRequest): Promise<PanoramaResult> {
+async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?: Transferable[]) => void): Promise<void> {
   const t0 = performance.now();
+  const id = req.id;
   const observer: LatLon = { lat: req.lat, lon: req.lon };
   const near = new Dem(NEAR_ZOOM);
   const far = new Dem(FAR_ZOOM);
 
-  const peaksPromise = fetchPeaks(observer, req.radius).then(
-    (p) => ({ peaks: p, error: null as string | null }),
-    (e) => ({ peaks: [], error: e instanceof Error ? e.message : String(e) }),
-  );
+  // Gipfelkacheln laden parallel zum Höhenmodell; die erste ist die eigene
+  const tiles = loadPeakTiles(observer, req.radius);
+  const tileProgress: PeakTileProgress = { done: 0, total: tilesFor(observer, req.radius).length, failed: 0 };
+  let peakError: string | null = null;
+  const firstTile = tiles.next();
 
-  const progress = (key: Key) => (done: number, total: number) => post({ type: 'progress', key, params: { done, total } });
+  const progress = (key: Key) => (done: number, total: number) => post({ id, type: 'progress', key, params: { done, total } });
   const nearLoad = await near.load(observer, NEAR_RADIUS, fetchTerrariumTile, progress('progress.tilesNear'));
   const farLoad = await far.load(observer, req.radius, fetchTerrariumTile, progress('progress.tilesFar'));
   const failed = nearLoad.failed + farLoad.failed;
@@ -58,8 +64,11 @@ async function compute(req: ComputeRequest): Promise<PanoramaResult> {
     return far.elevation(lat, lon);
   };
 
-  post({ type: 'progress', key: 'progress.peaks' });
-  const { peaks: raw, error: peakError } = await peaksPromise;
+  post({ id, type: 'progress', key: 'progress.peaks' });
+  const timeout = new Promise<null>((r) => setTimeout(() => r(null), FIRST_TILE_WAIT_MS));
+  const first = await Promise.race([firstTile, timeout]);
+  const ownTile: PeakTile | null = first && !first.done ? first.value : null;
+  const raw: PeakRaw[] = ownTile?.peaks ?? [];
 
   const demElevation = near.elevation(req.lat, req.lon);
   // Auf einem Gipfel (OSM-Gipfel < 80 m entfernt) dessen Höhe nehmen: das DEM liegt dort oft 30–60 m zu tief
@@ -80,7 +89,7 @@ async function compute(req: ComputeRequest): Promise<PanoramaResult> {
     step: (d) => Math.max(10, Math.min(d * 0.01, d < NEAR_RADIUS ? nearRes : farRes)),
   };
 
-  post({ type: 'progress', key: 'progress.ridges' });
+  post({ id, type: 'progress', key: 'progress.ridges' });
   const nBins = Math.round(360 / AZ_STEP);
   const horizon = new Float32Array(nBins);
   const bins: RidgePoint[][] = [];
@@ -93,22 +102,34 @@ async function compute(req: ComputeRequest): Promise<PanoramaResult> {
   }
   const lines = linkRidges(bins, AZ_STEP);
 
-  const peaks: Peak[] = [];
-  for (const p of raw) {
-    const dist = distance(observer, p);
-    if (dist < 150 || dist > req.radius) continue;
-    const demEle = sample(p.lat, p.lon, dist);
-    // DEM glättet Gipfel; OSM-Höhe bevorzugen, außer sie ist offensichtlich falsch
-    const useOsm = p.ele !== null && (Number.isNaN(demEle) || Math.abs(p.ele - demEle) < 400);
-    const ele = useOsm ? p.ele! : demEle;
-    if (Number.isNaN(ele)) continue;
-    const az = bearing(observer, p);
-    const angle = elevationAngle(h0, ele, dist);
-    const occ = occlusionAngle(sample, observer, h0, az, dist, rayOpts);
-    peaks.push({ id: p.id, name: p.name, names: p.names, lat: p.lat, lon: p.lon, ele, eleFromOsm: useOsm, dist, az, angle, visible: angle >= occ - 0.05 });
-  }
+  /** Lage, Höhe und Sichtbarkeit je Gipfel. */
+  const process = (list: PeakRaw[]): Peak[] => {
+    const out: Peak[] = [];
+    for (const p of list) {
+      const dist = distance(observer, p);
+      if (dist < 150 || dist > req.radius) continue;
+      const demEle = sample(p.lat, p.lon, dist);
+      // DEM glättet Gipfel; OSM-Höhe bevorzugen, außer sie ist offensichtlich falsch
+      const useOsm = p.ele !== null && (Number.isNaN(demEle) || Math.abs(p.ele - demEle) < 400);
+      const ele = useOsm ? p.ele! : demEle;
+      if (Number.isNaN(ele)) continue;
+      const az = bearing(observer, p);
+      const angle = elevationAngle(h0, ele, dist);
+      const occ = occlusionAngle(sample, observer, h0, az, dist, rayOpts);
+      out.push({ id: p.id, name: p.name, names: p.names, lat: p.lat, lon: p.lon, ele, eleFromOsm: useOsm, dist, az, angle, visible: angle >= occ - 0.05 });
+    }
+    return out;
+  };
+  const count = (tile: PeakTile) => {
+    tileProgress.done++;
+    if (tile.error) {
+      tileProgress.failed++;
+      peakError = tile.error;
+    }
+  };
 
-  return {
+  if (ownTile) count(ownTile);
+  const result: PanoramaResult = {
     request: req,
     demElevation,
     h0,
@@ -116,9 +137,23 @@ async function compute(req: ComputeRequest): Promise<PanoramaResult> {
     horizon,
     linePoints: lines.points,
     lineOffsets: lines.offsets,
-    peaks,
+    peaks: process(raw),
     peakError,
+    peakTiles: { ...tileProgress },
     failedTiles: failed,
     millis: performance.now() - t0,
   };
+  post({ id, type: 'result', result }, [result.horizon.buffer, result.linePoints.buffer, result.lineOffsets.buffer]);
+
+  // Übrige Kacheln nachliefern, solange keine neue Anfrage läuft
+  let next = ownTile ? tiles.next() : firstTile;
+  for (let r = await next; !r.done; r = await next) {
+    if (id !== currentId) {
+      await tiles.return();
+      return;
+    }
+    count(r.value);
+    post({ id, type: 'peaks', peaks: process(r.value.peaks), progress: { ...tileProgress }, error: peakError });
+    next = tiles.next();
+  }
 }

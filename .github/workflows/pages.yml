@@ -4,9 +4,10 @@ on:
   push:
     branches: [main, ccr-d1ee0c67-s1pl8d]
   workflow_dispatch:
-  # Gipfel-Datensatz täglich ergänzen; aktuelle Blöcke (< 30 Tage) werden übersprungen
-  schedule:
-    - cron: '17 3 * * *'
+  # Nach jedem Lauf des Gipfel-Datensatzes neu veröffentlichen
+  workflow_run:
+    workflows: [Build peak dataset]
+    types: [completed]
 
 permissions:
   contents: read
@@ -19,6 +20,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,20 +30,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      # Gipfel-Datensatz (OSM via Overpass): Stand des letzten Laufs wiederherstellen,
-      # fehlende/veraltete Blöcke im Zeitbudget nachladen, neuen Stand unter neuem Schlüssel sichern
-      - uses: actions/cache@v4
-        with:
-          path: public/peaks
-          key: peaks-v2-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: peaks-v2-
-      - name: Build peak dataset
-        # Ohne (vollständigen) Datensatz fällt die App auf Live-Overpass zurück
-        continue-on-error: true
-        timeout-minutes: 25
-        env:
-          PEAKS_BUDGET_MIN: 20
-        run: node scripts/build-peaks.mjs
+      # Gipfel-Datensatz kommt fertig vom Branch peaks-data (siehe peaks.yml)
+      - run: scripts/restore-peaks.sh public/peaks
       - run: npm run build
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -1,6 +1,8 @@
 import type { Key, Lang } from './i18n';
 
 export interface ComputeRequest {
+  /** Laufende Nummer; Nachrichten älterer Anfragen verwirft der Hauptthread. */
+  id: number;
   lat: number;
   lon: number;
   /** Sichtweite in Metern. */
@@ -41,12 +43,23 @@ export interface PanoramaResult {
   peaks: Peak[];
   /** Technische Fehlerdetails der Gipfelabfrage (Server, HTTP-Status), sprachneutral. */
   peakError: string | null;
+  /** Fortschritt der Gipfelkacheln; weitere kommen per 'peaks'-Nachricht nach. */
+  peakTiles: PeakTileProgress;
   /** Nicht geladene Höhenkacheln (Lücken im Panorama). */
   failedTiles: number;
   millis: number;
 }
 
-export type WorkerMessage =
+export interface PeakTileProgress {
+  done: number;
+  total: number;
+  failed: number;
+}
+
+export type WorkerMessage = { id: number } & (
   | { type: 'progress'; key: Key; params?: Record<string, number> }
   | { type: 'result'; result: PanoramaResult }
-  | { type: 'error'; key: Key; detail?: string };
+  | { type: 'error'; key: Key; detail?: string }
+  /** Nachgelieferte Gipfel einer weiteren Kachel. */
+  | { type: 'peaks'; peaks: Peak[]; progress: PeakTileProgress; error: string | null }
+);

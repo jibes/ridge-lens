@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { bearing, curvatureDrop, deltaDeg, destination, distance, elevationAngle } from './geo';
 import { decodeTerrarium, lonLatToPixel } from './dem';
 import { project } from './projection';
-import { parseEle, parseOverpassCsv, peakBBox, rowsToPeaks, type PeakRow } from './peaks';
+import { parseEle, parseOverpassCsv, rowsToPeaks, tilesFor, type PeakRow } from './peaks';
 
 const rigi = { lat: 47.0566, lon: 8.4851 };
 const pilatus = { lat: 46.979, lon: 8.2552 };
@@ -98,23 +98,20 @@ describe('overpass csv', () => {
     expect(peaks[1].names).toEqual({ fr: 'Cervin', it: 'Cervino' });
   });
 
-  it('bbox covers the radius and is rounded outward', () => {
-    const [s, w, n, e] = peakBBox(rigi, 100_000);
-    expect(s).toBeLessThan(rigi.lat - 0.9);
-    expect(n).toBeGreaterThan(rigi.lat + 0.9);
-    expect(e - w).toBeGreaterThan(2.6);
-    expect(Math.round(s * 20)).toBeCloseTo(s * 20, 6);
+  it('tiles within radius, own tile first, sorted by distance', () => {
+    const tiles = tilesFor(rigi, 100_000);
+    expect(tiles[0]).toMatchObject({ lat: 47, lon: 8, dist: 0 });
+    for (let i = 1; i < tiles.length; i++) expect(tiles[i].dist).toBeGreaterThanOrEqual(tiles[i - 1].dist);
+    expect(tiles.every((t) => t.dist <= 100_000)).toBe(true);
+    // 100 km um die Rigi: 46–47° N, 6–9° O (Ecken außerhalb fallen weg)
+    expect(tiles.length).toBeGreaterThanOrEqual(6);
+    expect(tiles.length).toBeLessThanOrEqual(12);
   });
 });
 
 describe('bundled peak rows', () => {
-  it('converts rows and filters to bbox', () => {
-    const rows: PeakRow[] = [
-      [1, 46.97, 8.25, 2128, 'Pilatus', '', '', '', 'Monte Pilato'],
-      [2, 45.0, 8.25, 100, 'Outside', '', '', '', ''],
-    ];
-    expect(rowsToPeaks(rows, [46, 7, 48, 9])).toEqual([
-      { id: 1, name: 'Pilatus', names: { it: 'Monte Pilato' }, lat: 46.97, lon: 8.25, ele: 2128 },
-    ]);
+  it('converts rows', () => {
+    const rows: PeakRow[] = [[1, 46.97, 8.25, 2128, 'Pilatus', '', '', '', 'Monte Pilato']];
+    expect(rowsToPeaks(rows)).toEqual([{ id: 1, name: 'Pilatus', names: { it: 'Monte Pilato' }, lat: 46.97, lon: 8.25, ele: 2128 }]);
   });
 });

@@ -148,6 +148,7 @@ for (const [s, w] of todo) {
   console.log(`block ${s},${w}: ${count} peaks`);
   await sleep(PAUSE_MS); // Overpass schonen
 }
-await writeIndex(state);
+// Index nur bei Änderungen neu schreiben (Zeitstempel), damit unveränderte Läufe nichts veröffentlichen
+if (fetched > 0) await writeIndex(state);
 const done = blocks.filter(([s, w]) => state[`${s}_${w}`]).length;
 console.log(`fetched ${fetched} blocks; ${done}/${blocks.length} available`);
