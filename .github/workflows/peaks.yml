@@ -8,7 +8,7 @@ on:
     - cron: '17 3 * * *'
   workflow_dispatch:
   push:
-    branches: [main, ccr-d1ee0c67-s1pl8d]
+    branches: [main]
     paths:
       - scripts/build-peaks.mjs
       - scripts/restore-peaks.sh

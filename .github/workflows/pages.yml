@@ -2,7 +2,7 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: [main, ccr-d1ee0c67-s1pl8d]
+    branches: [main]
   workflow_dispatch:
   # Nach jedem Lauf des Gipfel-Datensatzes neu veröffentlichen
   workflow_run:
