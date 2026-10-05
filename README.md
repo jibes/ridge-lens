@@ -32,6 +32,12 @@ Android (Chrome/Brave): Knopf „Installieren“ oder Browsermenü → „Zum St
 
 Der Service Worker (`public/sw.js`) hält die App-Shell und alle geladenen Höhenkacheln im Cache; Gipfel liegen im Cache der App. Einmal mit Netz berechnete Standorte funktionieren danach offline.
 
+## Kamerabild
+
+Auf Touch-Geräten liegt das Bild der Rückkamera unter Bergketten und Gipfeln (Knopf in der Leiste schaltet um, Wahl wird gespeichert). Das Sichtfeld der Anzeige folgt aus dem Kamera-Bildwinkel (lange Bildseite, Standard 67° ≈ 26-mm-Hauptkamera) und dem Bildausschnitt (`object-fit: cover`), siehe `src/camera.ts`.
+
+Kalibrieren: Gipfel antippen und anpeilen richtet den Kompass aus; passen Gipfel am Bildrand nicht, mit zwei Fingern den Bildwinkel anpassen (Wert und Zurücksetzen in den Einstellungen).
+
 ## Sensormodus
 
 Der Blick folgt dem Handy, das Fadenkreuz markiert die Blickrichtung der Rückkamera.
@@ -60,7 +66,7 @@ Technik (`src/orientation.ts`): Rotationsmatrix aus α/β/γ (W3C), Blickachse =
 ## Nächste Stufen
 
 1. ~~Geräteorientierung steuert den Blick; Kompass-Korrektur.~~
-2. Kamerabild unter dem Overlay, Sichtfeld-Kalibrierung.
+2. ~~Kamerabild unter dem Overlay, Sichtfeld-Kalibrierung.~~
 3. Automatischer Abgleich: Skyline aus dem Kamerabild gegen berechneten Horizont korrelieren.
 
 ## Datenquellen

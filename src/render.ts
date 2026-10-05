@@ -64,6 +64,19 @@ export const DARK: Palette = {
   overviewFill: 'rgba(90,110,135,0.9)',
 };
 
+/** Über dem Kamerabild: hell mit dunklem Schatten, lesbar auf Himmel, Fels und Schnee. */
+export const CAMERA: Palette = {
+  ...DARK,
+  lineNear: [255, 255, 255],
+  lineFar: [215, 230, 255],
+  scale: 'rgba(255,255,255,0.9)',
+  text: '#ffffff',
+  textMuted: 'rgba(255,255,255,0.85)',
+  halo: 'rgba(0,0,0,0.55)',
+  leader: 'rgba(255,255,255,0.75)',
+  hidden: 'rgba(255,255,255,0.45)',
+};
+
 function mix(a: RGB, b: RGB, t: number): string {
   return `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * t)).join(',')})`;
 }
@@ -76,6 +89,8 @@ export interface RenderOptions {
   selectedPeakId: number | null;
   /** Freizuhaltender Bereich oben (px), z. B. für die Statuszeile. */
   topInset: number;
+  /** Kamerabild darunter: keine Himmel-/Geländeflächen, Linien mit Schatten. */
+  overlay: boolean;
   /** Anzeigename eines Gipfels (Sprache). */
   peakName: (p: Peak) => string;
   /** Himmelsrichtungen N, NO, … in der UI-Sprache. */
@@ -98,16 +113,26 @@ export function renderView(
 ): PlacedLabel[] {
   const { width: W, height: H } = cam;
   const pal = opts.palette;
-  const sky = ctx.createLinearGradient(0, 0, 0, H);
-  sky.addColorStop(0, pal.skyTop);
-  sky.addColorStop(1, pal.skyBottom);
-  ctx.fillStyle = sky;
-  ctx.fillRect(0, 0, W, H);
-
   const proj = projector(cam);
-  if (pano) {
-    drawGround(ctx, cam, pano, proj, pal);
-    drawLines(ctx, cam, pano, proj, pal);
+  if (opts.overlay) {
+    ctx.clearRect(0, 0, W, H);
+    if (pano) {
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,0,0,0.6)';
+      ctx.shadowBlur = 3;
+      drawLines(ctx, cam, pano, proj, pal, 0.75);
+      ctx.restore();
+    }
+  } else {
+    const sky = ctx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, pal.skyTop);
+    sky.addColorStop(1, pal.skyBottom);
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, W, H);
+    if (pano) {
+      drawGround(ctx, cam, pano, proj, pal);
+      drawLines(ctx, cam, pano, proj, pal);
+    }
   }
   const scaleY = opts.topInset + 14;
   drawCompass(ctx, cam, proj, pal, scaleY, opts.compass);
@@ -151,7 +176,7 @@ function drawGround(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaRe
   ctx.fill();
 }
 
-function drawLines(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaResult, proj: Project, pal: Palette) {
+function drawLines(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaResult, proj: Project, pal: Palette, alpha = 1) {
   const { linePoints: pts, lineOffsets: off } = pano;
   const radius = pano.request.radius;
   // Nach Distanzklassen bündeln: ein Pfad je Klasse, fern zuerst
@@ -179,12 +204,14 @@ function drawLines(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaRes
   }
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
+  ctx.globalAlpha = alpha;
   for (let c = DIST_CLASSES - 1; c >= 0; c--) {
     const t = (c + 0.5) / DIST_CLASSES;
     ctx.strokeStyle = mix(pal.lineNear, pal.lineFar, t);
     ctx.lineWidth = 2 - 1.3 * t;
     ctx.stroke(paths[c]);
   }
+  ctx.globalAlpha = 1;
 }
 
 /**

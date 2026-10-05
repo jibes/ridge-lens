@@ -3,7 +3,8 @@ import { OrientationTracker } from './orientation';
 import type { Camera } from './projection';
 import type { ComputeRequest, PanoramaResult, Peak, WorkerMessage } from './protocol';
 import { applyDom, compassLabels, detectLang, lang, setLang, storedLangChoice, storeLangChoice, t, type Lang } from './i18n';
-import { DARK, LIGHT, renderOverview, renderView, type PlacedLabel } from './render';
+import { CameraFeed, DEFAULT_CAMERA_FOV, displayHfov, fovLongFromDisplay } from './camera';
+import { CAMERA, DARK, LIGHT, renderOverview, renderView, type PlacedLabel } from './render';
 
 interface Preset {
   name: string;
@@ -146,9 +147,11 @@ function requestRender() {
 function render() {
   frame = 0;
   syncSensor();
+  syncCameraFov();
   updateNoise();
   const dpr = devicePixelRatio || 1;
-  const palette = darkScheme.matches ? DARK : LIGHT;
+  const overlay = cameraShown();
+  const palette = overlay ? CAMERA : darkScheme.matches ? DARK : LIGHT;
   viewCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   labels = renderView(viewCtx, cam, pano, {
     palette,
@@ -159,6 +162,7 @@ function render() {
     compass: compassLabels(8),
     // Skala und Labels unterhalb der Statuszeile beginnen
     topInset: statusEl.getBoundingClientRect().bottom - view.getBoundingClientRect().top,
+    overlay,
   });
   if (overview.clientWidth) {
     overCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -317,6 +321,21 @@ function clampFov(f: number) {
   return Math.min(100, Math.max(5, f));
 }
 
+/**
+ * Zoom: ohne Kamera das Sichtfeld; mit Kamerabild ist das Sichtfeld durch die Kamera
+ * vorgegeben, dann kalibriert die Geste den Bildwinkel (bis Gipfel und Linien passen).
+ */
+function zoomBy(factor: number) {
+  const size = cameraFeed.size;
+  if (cameraShown()) {
+    const target = cam.hfov * factor;
+    cameraFov = Math.min(120, Math.max(30, fovLongFromDisplay(target, size.w, size.h, cam.width, cam.height)));
+    saveCameraFov();
+  } else {
+    cam.hfov = clampFov(cam.hfov * factor);
+  }
+}
+
 /** Blick drehen/neigen; im Sensormodus wird stattdessen die Korrektur verschoben. */
 function rotateBy(dHeading: number, dPitch: number) {
   if (sensorOn) {
@@ -349,7 +368,7 @@ view.addEventListener('pointermove', (e) => {
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     const [a, b] = [...pointers.values()];
     const d = Math.hypot(a.x - b.x, a.y - b.y);
-    if (pinchDist) cam.hfov = clampFov((cam.hfov * pinchDist) / d);
+    if (pinchDist) zoomBy(pinchDist / d);
     pinchDist = d;
   } else {
     if (downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 6) downAt.moved = true;
@@ -375,7 +394,7 @@ view.addEventListener(
   'wheel',
   (e) => {
     e.preventDefault();
-    cam.hfov = clampFov(cam.hfov * Math.exp(e.deltaY * 0.001));
+    zoomBy(Math.exp(e.deltaY * 0.001));
     requestRender();
     writeHash();
   },
@@ -389,8 +408,8 @@ window.addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowRight') rotateBy(step, 0);
   else if (e.key === 'ArrowUp') rotateBy(0, step * 0.5);
   else if (e.key === 'ArrowDown') rotateBy(0, -step * 0.5);
-  else if (e.key === '+') cam.hfov = clampFov(cam.hfov / 1.2);
-  else if (e.key === '-') cam.hfov = clampFov(cam.hfov * 1.2);
+  else if (e.key === '+') zoomBy(1 / 1.2);
+  else if (e.key === '-') zoomBy(1.2);
   else return;
   requestRender();
   writeHash();
@@ -497,6 +516,9 @@ function syncSensor() {
 /** Rauschanzeige im offenen Einstellungsblatt: zeigt, welche Achse zittert. */
 const noiseEl = $<HTMLParagraphElement>('sensor-noise');
 function updateNoise() {
+  const camRow = cameraShown() && panel.hidden === false;
+  cameraFovRow.hidden = !camRow;
+  if (camRow) cameraFovText.textContent = t('settings.cameraFov', { fov: cameraFov.toFixed(1) });
   const n = sensorOn && panel.hidden === false ? tracker.noise : null;
   noiseEl.hidden = !n;
   if (n) noiseEl.textContent = t('settings.noise', { h: n.heading.toFixed(1), p: n.pitch.toFixed(1), r: n.roll.toFixed(1) });
@@ -577,6 +599,91 @@ installBtn.addEventListener('click', async () => {
 });
 window.addEventListener('appinstalled', () => (installBtn.hidden = true));
 
+// --- Kamerabild ------------------------------------------------------------------
+
+const videoEl = $<HTMLVideoElement>('camera');
+const cameraFeed = new CameraFeed(videoEl);
+const cameraBtn = $<HTMLButtonElement>('camera-toggle');
+const CAMERA_PREF_KEY = 'ridge-lens-camera';
+const CAMERA_FOV_KEY = 'ridge-lens-camera-fov';
+let cameraWanted = false;
+let cameraFov = loadNumber(CAMERA_FOV_KEY) ?? DEFAULT_CAMERA_FOV;
+/** Sichtfeld vor dem Einschalten der Kamera, wird beim Ausschalten wiederhergestellt. */
+let manualHfov = cam.hfov;
+
+function loadNumber(key: string): number | null {
+  try {
+    const v = Number(localStorage.getItem(key));
+    return Number.isFinite(v) && v > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveCameraFov() {
+  try {
+    localStorage.setItem(CAMERA_FOV_KEY, String(cameraFov));
+  } catch {
+    /* kein Speicher */
+  }
+}
+
+function cameraShown(): boolean {
+  return cameraWanted && cameraFeed.active && cameraFeed.size.w > 0;
+}
+
+/** Mit Kamerabild ergibt sich das Sichtfeld aus Kamera-Bildwinkel und Bildausschnitt. */
+function syncCameraFov() {
+  if (!cameraShown()) return;
+  const { w, h } = cameraFeed.size;
+  cam.hfov = displayHfov(cameraFov, w, h, cam.width, cam.height);
+}
+
+async function setCamera(on: boolean, remember = true) {
+  if (remember) {
+    try {
+      localStorage.setItem(CAMERA_PREF_KEY, on ? 'on' : 'off');
+    } catch {
+      /* kein Speicher */
+    }
+  }
+  if (on) {
+    if (!cameraWanted) manualHfov = cam.hfov;
+    cameraWanted = true;
+    try {
+      await cameraFeed.start();
+      setNotice('camera', null);
+    } catch (err) {
+      cameraWanted = false;
+      const msg = err instanceof Error ? err.name || err.message : String(err);
+      setNotice('camera', () => t('camera.unavailable', { msg }));
+    }
+  } else {
+    cameraWanted = false;
+    cameraFeed.stop();
+    cam.hfov = manualHfov;
+  }
+  cameraBtn.setAttribute('aria-pressed', String(cameraWanted));
+  document.body.classList.toggle('camera-on', cameraWanted);
+  requestRender();
+}
+
+cameraBtn.addEventListener('click', () => void setCamera(!cameraWanted));
+videoEl.addEventListener('loadedmetadata', requestRender);
+videoEl.addEventListener('resize', requestRender);
+// Nach Rückkehr in den Vordergrund ist der Kamerastrom oft beendet
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && cameraWanted && !cameraFeed.active) void setCamera(true, false);
+});
+
+const cameraFovRow = $<HTMLDivElement>('camera-fov-row');
+const cameraFovText = $<HTMLSpanElement>('camera-fov');
+$<HTMLButtonElement>('camera-fov-reset').addEventListener('click', () => {
+  cameraFov = DEFAULT_CAMERA_FOV;
+  saveCameraFov();
+  requestRender();
+});
+
 // --- Sprache ----------------------------------------------------------------------
 
 const langSel = $<HTMLSelectElement>('lang');
@@ -610,8 +717,18 @@ if (!fromHash) {
   presetSel.value = '0';
 }
 resize();
-// Sensoren nur auf Touch-Geräten; Desktop hat keine Lagesensoren
-if (matchMedia('(pointer: coarse)').matches) startSensors();
+// Sensoren und Kamera nur auf Touch-Geräten; Desktop hat keine Lagesensoren
+if (matchMedia('(pointer: coarse)').matches) {
+  startSensors();
+  // Kamerabild standardmäßig an, außer der Nutzer hat es ausgeschaltet
+  let pref: string | null = null;
+  try {
+    pref = localStorage.getItem(CAMERA_PREF_KEY);
+  } catch {
+    /* kein Speicher */
+  }
+  if (pref !== 'off') void setCamera(true, false);
+}
 void locate().then((err) => {
   if (err) setNotice('gps', () => t('gps.fallback', { err: err(), place: fromHash ? t('gps.placeFromLink') : PRESETS[0].name }));
   compute();

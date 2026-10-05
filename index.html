@@ -17,6 +17,7 @@
   </head>
   <body>
     <main id="stage">
+      <video id="camera" playsinline muted autoplay aria-hidden="true"></video>
       <canvas id="view" data-i18n-aria="aria.view"></canvas>
       <canvas id="overview" data-i18n-aria="aria.overview"></canvas>
 
@@ -35,6 +36,9 @@
       <nav class="dock" data-i18n-aria="aria.controls">
         <button type="button" id="menu" class="icon-btn" data-i18n-aria="aria.settings" aria-expanded="false" aria-controls="panel">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></svg>
+        </button>
+        <button type="button" id="camera-toggle" class="icon-btn" data-i18n-aria="aria.camera" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-2.5h6L17 8h3v11H4z" /><circle cx="12" cy="13" r="3.5" /></svg>
         </button>
         <button type="button" id="gps" class="icon-btn" data-i18n-aria="aria.locate">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.5" class="fill" /><circle cx="12" cy="12" r="7.5" /><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22" /></svg>
@@ -76,6 +80,10 @@
         </div>
         <p class="help" data-i18n="settings.help"></p>
         <p class="help" id="sensor-noise" hidden></p>
+        <div class="row" id="camera-fov-row" hidden>
+          <span class="help" id="camera-fov"></span>
+          <button type="button" id="camera-fov-reset" data-i18n="settings.resetCameraFov"></button>
+        </div>
         <p class="credits">
           <span data-i18n="credits.elevation"></span>: <a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md" target="_blank" rel="noopener">AWS Terrain Tiles</a> ·
           <span data-i18n="credits.peaks"></span>: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener" data-i18n="credits.osm"></a>
