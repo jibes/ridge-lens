@@ -89,37 +89,21 @@ export class OrientationTracker {
 
   constructor(private onChange: () => void, private smoothing = 0.25) {}
 
-  /**
-   * Muss aus einem Klick-Handler aufgerufen werden (iOS-Berechtigung).
-   * Liefert das Ergebnis von requestPermission, falls vorhanden. Listener werden
-   * auch bei "denied" angehängt: Brave meldet das teils, obwohl Events kommen.
-   */
-  async start(): Promise<'granted' | 'denied' | null> {
-    const req = (DeviceOrientationEvent as unknown as { requestPermission?: PermissionFn }).requestPermission;
-    const result = req ? await req.call(DeviceOrientationEvent).catch(() => 'denied' as const) : null;
+  /** Hängt die Listener an; Daten kommen auf Android/Desktop ohne weitere Erlaubnis. */
+  start(): void {
     window.addEventListener('deviceorientationabsolute', this.handler);
     window.addEventListener('deviceorientation', this.handler);
-    return result;
+    void this.requestPermission();
   }
 
-  /** Berechtigungsstatus der Sensoren (Chromium), soweit abfragbar. */
-  static async sensorPermissions(): Promise<Record<string, PermissionState | 'unbekannt'>> {
-    const out: Record<string, PermissionState | 'unbekannt'> = {};
-    for (const name of ['accelerometer', 'gyroscope', 'magnetometer']) {
-      try {
-        out[name] = (await navigator.permissions.query({ name } as unknown as PermissionDescriptor)).state;
-      } catch {
-        out[name] = 'unbekannt';
-      }
-    }
-    return out;
+  /** iOS: Erlaubnis anfragen. Ohne Nutzergeste lehnt Safari ab; dann später erneut aus einer Geste. */
+  async requestPermission(): Promise<void> {
+    const req = (DeviceOrientationEvent as unknown as { requestPermission?: PermissionFn }).requestPermission;
+    await req?.call(DeviceOrientationEvent).catch(() => {});
   }
 
-  stop(): void {
-    window.removeEventListener('deviceorientationabsolute', this.handler);
-    window.removeEventListener('deviceorientation', this.handler);
-    this.f = this.r = null;
-    this.status = null;
+  static get needsPermission(): boolean {
+    return typeof (DeviceOrientationEvent as unknown as { requestPermission?: unknown }).requestPermission === 'function';
   }
 
   get angles(): ViewAngles | null {

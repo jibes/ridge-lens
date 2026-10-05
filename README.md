@@ -16,11 +16,11 @@ Zustand steckt in der URL: `#lat,lon,höhe,blickrichtung,sichtfeld`, z. B. `#47.
 
 ## Start
 
-Beim Öffnen: Bildschirm bleibt an (Screen Wake Lock), Standort per GPS, auf Touch-Geräten zusätzlich Sensormodus (iOS: erst nach Tippen auf „Sensor“). Ohne GPS-Freigabe wird der Ort aus dem Link bzw. Rigi Kulm gezeigt; ohne Sensordaten schaltet der Sensormodus nach 3 s ab und die Statuszeile nennt den Grund (z. B. Brave blockiert Bewegungssensoren).
+Beim Öffnen: Bildschirm bleibt an (Screen Wake Lock), Standort per GPS, auf Touch-Geräten Sensoren an – ohne Knopf. Der Sensormodus beginnt mit den ersten Orientierungsdaten; iOS holt die Erlaubnis bei der ersten Berührung nach. Ohne Sensordaten (z. B. Brave) bleibt der manuelle Modus. Ohne GPS-Freigabe wird der Ort aus dem Link bzw. Rigi Kulm gezeigt.
 
 ## Bedienung
 
-Vollbild-Panorama, unten drei Knöpfe: Einstellungen (Ort, Koordinaten, Höhe, Sichtweite, Kompass-Korrektur, Installieren), Sensor an/aus, Standort neu bestimmen. Farben folgen dem Hell-/Dunkelmodus des Systems. Ohne Sensor: ziehen, Pinch/Mausrad, 360°-Übersicht antippen.
+Vollbild-Panorama, unten zwei Knöpfe: Einstellungen (Ort, Koordinaten, Höhe, Sichtweite, Kompass-Korrektur, Installieren) und Standort neu bestimmen. Farben folgen dem Hell-/Dunkelmodus des Systems. Ohne Sensor: ziehen, Pinch/Mausrad, 360°-Übersicht antippen.
 
 ## App installieren
 
@@ -30,7 +30,7 @@ Der Service Worker (`public/sw.js`) hält die App-Shell und alle geladenen Höhe
 
 ## Sensormodus
 
-„Sensor“ aktiviert die Geräteorientierung (iOS fragt nach Erlaubnis). Der Blick folgt dann dem Handy, das rote Fadenkreuz markiert die Blickrichtung der Rückkamera.
+Der Blick folgt dem Handy, das Fadenkreuz markiert die Blickrichtung der Rückkamera.
 
 Kompass korrigieren:
 - **Anpeilen:** Gipfel-Label antippen → Fadenkreuz auf den echten Gipfel richten → „Übernehmen“. Setzt Korrektur für Kurs und Neigung.

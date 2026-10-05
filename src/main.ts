@@ -47,7 +47,6 @@ function setNotice(key: string, text: string | null) {
 }
 const view = $<HTMLCanvasElement>('view');
 const overview = $<HTMLCanvasElement>('overview');
-const sensorBtn = $<HTMLButtonElement>('sensor');
 const alignBar = $<HTMLDivElement>('align');
 const alignText = $<HTMLSpanElement>('align-text');
 const alignApply = $<HTMLButtonElement>('align-apply');
@@ -64,7 +63,14 @@ let busy = false;
 let selected: Peak | null = null;
 
 // Sensormodus: Blick folgt dem Gerät; Ziehen/Anpeilen korrigiert den Kompass
-const tracker = new OrientationTracker(() => requestRender());
+const tracker = new OrientationTracker(() => {
+  if (!sensorOn) {
+    sensorOn = true;
+    setNotice('sensor', null);
+    applySensorUi();
+  }
+  requestRender();
+});
 let sensorOn = false;
 const OFFSET_KEY = 'ridge-lens-offset';
 const offset = loadOffset();
@@ -444,55 +450,24 @@ function syncSensor() {
     (tracker.status === 'relative' ? ' · kein Kompass – Gipfel antippen zum Ausrichten' : '');
 }
 
-let sensorTimeout = 0;
-
-/** iOS verlangt für Sensoren eine Nutzergeste; dort kein automatischer Start. */
-const sensorNeedsGesture =
-  typeof (DeviceOrientationEvent as unknown as { requestPermission?: unknown }).requestPermission === 'function' &&
-  !('brave' in navigator);
-
-async function setSensor(on: boolean) {
-  clearTimeout(sensorTimeout);
-  if (on) {
-    setNotice('sensor', null);
-    const permission = await tracker.start();
-    sensorOn = true;
-    sensorText.textContent = 'Warte auf Sensordaten …';
-    sensorTimeout = window.setTimeout(() => void handleMissingSensors(permission), 3000);
-  } else {
-    tracker.stop();
-    sensorOn = false;
-    cam.pitch = Math.max(-30, Math.min(30, cam.pitch));
-  }
-  sensorBtn.classList.toggle('active', sensorOn);
-  sensorBtn.setAttribute('aria-pressed', String(sensorOn));
+/** Sensormodus ist an, sobald Orientierungsdaten kommen; vorher und ohne Sensor: manuell. */
+function applySensorUi() {
   sensorInfo.hidden = !sensorOn;
   document.body.classList.toggle('sensor-on', sensorOn);
   updateAlignBar();
   requestRender();
 }
 
-sensorBtn.addEventListener('click', () => void setSensor(!sensorOn));
-
-/** Keine Daten nach Aktivierung: Sensormodus aus, Ursache und Abhilfe in der Statuszeile. */
-async function handleMissingSensors(permission: 'granted' | 'denied' | null) {
-  if (!sensorOn || tracker.angles) return;
-  const perms = await OrientationTracker.sensorPermissions();
-  const blocked = Object.values(perms).includes('denied');
-  let msg: string;
-  if (!window.isSecureContext) {
-    msg = 'Keine Sensordaten: Seite muss über HTTPS geladen werden.';
-  } else if ('brave' in navigator) {
-    msg = 'Brave blockiert Bewegungssensoren. Für Sensormodus Chrome oder Firefox verwenden; Ziehen funktioniert weiterhin.';
-  } else if (permission === 'denied' || blocked) {
-    msg =
-      'Bewegungssensoren blockiert: Symbol links in der Adressleiste → Website-Einstellungen → ' +
-      'Bewegungssensoren → Zulassen, dann neu laden.';
-  } else {
-    msg = 'Keine Sensordaten (Gerät ohne Lagesensor?). Blick per Ziehen steuern.';
-  }
-  await setSensor(false);
-  setNotice('sensor', msg);
+/** Startet die Sensoren ohne Rückfrage; iOS holt die Erlaubnis bei der ersten Berührung nach. */
+function startSensors() {
+  tracker.start();
+  window.setTimeout(() => {
+    if (tracker.angles) return;
+    if (OrientationTracker.needsPermission) {
+      document.addEventListener('pointerup', () => void tracker.requestPermission(), { once: true });
+    }
+    if ('brave' in navigator) setNotice('sensor', 'Brave blockiert Bewegungssensoren – Blick per Ziehen steuern');
+  }, 3000);
 }
 
 $<HTMLButtonElement>('offset-reset').addEventListener('click', () => {
@@ -559,11 +534,8 @@ if (!fromHash) {
   presetSel.value = '0';
 }
 resize();
-// Sensoren automatisch nur auf Touch-Geräten; Desktop hat keine Lagesensoren
-if (matchMedia('(pointer: coarse)').matches) {
-  if (sensorNeedsGesture) setNotice('sensor', 'Für Ausrichtung per Handy „Sensor“ antippen.');
-  else void setSensor(true);
-}
+// Sensoren nur auf Touch-Geräten; Desktop hat keine Lagesensoren
+if (matchMedia('(pointer: coarse)').matches) startSensors();
 void locate().then((err) => {
   if (err) setNotice('gps', `GPS: ${err} – zeige ${fromHash ? 'Ort aus Link' : PRESETS[0].name}`);
   compute();
