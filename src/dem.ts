@@ -32,16 +32,73 @@ export type TileFetcher = (z: number, x: number, y: number) => Promise<Float32Ar
 export const fetchTerrariumTile: TileFetcher = async (z, x, y) => {
   const res = await fetch(`${TERRARIUM_URL}/${z}/${x}/${y}.png`);
   if (!res.ok) return null;
-  const bmp = await createImageBitmap(await res.blob(), {
-    colorSpaceConversion: 'none',
-    premultiplyAlpha: 'none',
-  });
-  const canvas = new OffscreenCanvas(TILE, TILE);
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-  ctx.drawImage(bmp, 0, 0);
-  bmp.close();
-  return decodeTerrarium(ctx.getImageData(0, 0, TILE, TILE).data);
+  const png = await decodePng(new Uint8Array(await res.arrayBuffer()));
+  if (!png || png.width !== TILE || png.height !== TILE) return null;
+  return decodeTerrarium(png.rgba);
 };
+
+/**
+ * PNG ohne Canvas dekodieren (8 bit, RGB/RGBA, ohne Interlacing – das Format der
+ * Terrarium-Kacheln). Canvas-Auslesen verfälscht Brave absichtlich (Fingerprinting-
+ * Schutz): ±1 im Rotkanal sind ±256 m Höhe.
+ */
+export async function decodePng(data: Uint8Array): Promise<{ width: number; height: number; rgba: Uint8ClampedArray } | null> {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  if (view.getUint32(0) !== 0x89504e47) return null;
+  let width = 0;
+  let height = 0;
+  let channels = 0;
+  const idat: Uint8Array[] = [];
+  for (let p = 8; p + 8 <= data.length; ) {
+    const len = view.getUint32(p);
+    const type = String.fromCharCode(...data.subarray(p + 4, p + 8));
+    const body = data.subarray(p + 8, p + 8 + len);
+    if (type === 'IHDR') {
+      width = view.getUint32(p + 8);
+      height = view.getUint32(p + 12);
+      const [depth, color, , , interlace] = body.subarray(8, 13);
+      channels = color === 2 ? 3 : color === 6 ? 4 : 0;
+      if (depth !== 8 || !channels || interlace) return null;
+    } else if (type === 'IDAT') idat.push(body);
+    else if (type === 'IEND') break;
+    p += 12 + len;
+  }
+  if (!channels || !idat.length) return null;
+  // IDAT = zlib-Strom, den DecompressionStream('deflate') direkt versteht
+  const raw = new Uint8Array(await new Response(new Blob(idat as BlobPart[]).stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer());
+  const stride = width * channels;
+  if (raw.length < height * (stride + 1)) return null;
+  const px = new Uint8Array(height * stride);
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (stride + 1)];
+    const src = y * (stride + 1) + 1;
+    const row = y * stride;
+    for (let i = 0; i < stride; i++) {
+      const a = i >= channels ? px[row + i - channels] : 0;
+      const b = y > 0 ? px[row - stride + i] : 0;
+      const c = i >= channels && y > 0 ? px[row - stride + i - channels] : 0;
+      let v = raw[src + i];
+      if (filter === 1) v += a;
+      else if (filter === 2) v += b;
+      else if (filter === 3) v += (a + b) >> 1;
+      else if (filter === 4) {
+        const pa = Math.abs(b - c);
+        const pb = Math.abs(a - c);
+        const pc = Math.abs(a + b - 2 * c);
+        v += pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+      }
+      px[row + i] = v;
+    }
+  }
+  const rgba = new Uint8ClampedArray(width * height * 4);
+  for (let i = 0, j = 0; i < px.length; i += channels, j += 4) {
+    rgba[j] = px[i];
+    rgba[j + 1] = px[i + 1];
+    rgba[j + 2] = px[i + 2];
+    rgba[j + 3] = channels === 4 ? px[i + 3] : 255;
+  }
+  return { width, height, rgba };
+}
 
 /** Höhenmodell einer Zoomstufe mit bilinearer Interpolation. */
 export class Dem {
