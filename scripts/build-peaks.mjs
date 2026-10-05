@@ -16,7 +16,7 @@ const BLOCK = 2;
 const CENTER = { lat: 46.75, lon: 8.25 };
 const MAX_AGE_DAYS = 30;
 // Blöcke älter als das aktuelle Kachelformat (Bekanntheit ergänzt) gelten als veraltet
-const FORMAT_SINCE = Date.parse('2026-10-05T21:00:00Z');
+const FORMAT_SINCE = Date.parse('2026-10-05T19:55:00Z');
 const BUDGET_MS = Number(process.env.PEAKS_BUDGET_MIN ?? 20) * 60_000;
 const PAUSE_MS = Number(process.env.PEAKS_PAUSE_MS ?? 2_000);
 const ENDPOINTS = process.env.OVERPASS_ENDPOINTS?.split(',') ?? [
