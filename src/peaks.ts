@@ -56,11 +56,67 @@ export function peakBBox(center: LatLon, radius: number): [number, number, numbe
   return [down(center.lat - dLat), down(center.lon - dLon), up(center.lat + dLat), up(center.lon + dLon)];
 }
 
-/** Benannte Gipfel im Rechteck um den Kreis (Rechteck ist für Overpass deutlich billiger als `around`). */
+/** Zeile im mitgelieferten Datensatz: [id, lat, lon, ele|null, name, de, en, fr, it]. */
+export type PeakRow = [number, number, number, number | null, string, string, string, string, string];
+
+export function rowsToPeaks(rows: PeakRow[], [s, w, n, e]: [number, number, number, number]): PeakRaw[] {
+  const out: PeakRaw[] = [];
+  for (const [id, lat, lon, ele, name, ...localized] of rows) {
+    if (lat < s || lat > n || lon < w || lon > e) continue;
+    const names: PeakRaw['names'] = {};
+    NAME_LANGS.forEach((l, i) => {
+      if (localized[i]) names[l] = localized[i];
+    });
+    out.push({ id, name, names, lat, lon, ele });
+  }
+  return out;
+}
+
+interface DatasetIndex {
+  region: { south: number; north: number; west: number; east: number };
+  tiles: string[];
+}
+
+/**
+ * Gipfel aus dem mit der App ausgelieferten Datensatz (1°-Kacheln, im CI aus OSM erzeugt).
+ * Null, wenn kein Datensatz vorhanden oder das Rechteck nicht abgedeckt ist.
+ */
+async function fetchBundledPeaks(bbox: [number, number, number, number]): Promise<PeakRaw[] | null> {
+  const base = new URL('../peaks/', import.meta.url);
+  const res = await fetch(new URL('index.json', base)).catch(() => null);
+  if (!res?.ok) return null;
+  const index = (await res.json().catch(() => null)) as DatasetIndex | null;
+  if (!index) return null;
+  const [s, w, n, e] = bbox;
+  const r = index.region;
+  if (s < r.south || n > r.north || w < r.west || e > r.east) return null;
+  const available = new Set(index.tiles);
+  const keys: string[] = [];
+  for (let lat = Math.floor(s); lat <= Math.floor(n); lat++) {
+    for (let lon = Math.floor(w); lon <= Math.floor(e); lon++) {
+      if (available.has(`${lat}_${lon}`)) keys.push(`${lat}_${lon}`);
+    }
+  }
+  const tiles = await Promise.all(
+    keys.map(async (k) => {
+      const tr = await fetch(new URL(`${k}.json`, base));
+      if (!tr.ok) throw new Error(`peaks/${k}.json HTTP ${tr.status}`);
+      return (await tr.json()) as PeakRow[];
+    }),
+  ).catch(() => null);
+  return tiles && rowsToPeaks(tiles.flat(), bbox);
+}
+
+/**
+ * Benannte Gipfel im Rechteck um den Kreis: zuerst aus dem mitgelieferten Datensatz,
+ * sonst live über Overpass (Rechteck ist dort deutlich billiger als `around`).
+ */
 export async function fetchPeaks(center: LatLon, radius: number): Promise<PeakRaw[]> {
-  const bbox = peakBBox(center, radius)
-    .map((v) => v.toFixed(2))
-    .join(',');
+  const box = peakBBox(center, radius);
+  const bundled = await fetchBundledPeaks(box);
+  if (bundled) return bundled;
+
+  const bbox = box.map((v) => v.toFixed(2)).join(',');
   const query =
     `[out:csv(::id,::lat,::lon,ele,name,${NAME_LANGS.map((l) => `"name:${l}"`).join(',')};false;"\t")]` +
     `[timeout:60][bbox:${bbox}];` +

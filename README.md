@@ -48,7 +48,7 @@ Technik (`src/orientation.ts`): Rotationsmatrix aus α/β/γ (W3C), Blickachse =
 
 - **Höhenmodell:** [Terrarium-Kacheln](https://github.com/tilezen/joerd) von AWS; Zoom 12 (≈ 26 m) bis 8 km, Zoom 10 (≈ 100 m) darüber hinaus.
 - **Raycasting** (Web Worker, `src/worker.ts`): 3600 Strahlen à 0,1°, Höhenwinkel mit Erdkrümmung und Refraktion (k = 0,13). Kammlinie = letzter sichtbarer Punkt vor einem verdeckten Abschnitt (`src/panorama.ts`); benachbarte Kammpunkte ähnlicher Distanz werden zu Linien verbunden.
-- **Gipfel:** OSM `natural=peak` über Overpass (Rechteck-Abfrage, CSV, vier Server nacheinander mit 30-s-Timeout), im Browser-Cache abgelegt. Sichtbar, wenn Höhenwinkel ≥ maximaler Geländewinkel davor. OSM-Höhe wird bevorzugt, außer sie weicht > 400 m vom DEM ab.
+- **Gipfel:** Mitgelieferter Datensatz für Alpen und Umgebung (42–50° N, 2–18° O) in 1°-Kacheln unter `peaks/`, erzeugt im CI von `scripts/build-peaks.mjs` aus OSM (`natural=peak` mit Name, wöchentlich gecacht). Außerhalb davon live über Overpass (Rechteck-Abfrage, CSV, vier Server nacheinander mit 30-s-Timeout), im Browser-Cache abgelegt. Sichtbar, wenn Höhenwinkel ≥ maximaler Geländewinkel davor. OSM-Höhe wird bevorzugt, außer sie weicht > 400 m vom DEM ab.
 - **Projektion** (`src/projection.ts`): Lochkamera mit Blickrichtung, Neigung und Sichtfeld – dasselbe Modell wie später für das Kamerabild.
 
 ## Bekannte Grenzen

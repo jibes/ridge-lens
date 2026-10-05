@@ -25,6 +25,20 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      # Gipfel-Datensatz (OSM via Overpass) wöchentlich neu, sonst aus dem Cache
+      - id: week
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+      - id: peaks-cache
+        uses: actions/cache@v4
+        with:
+          path: public/peaks
+          key: peaks-${{ hashFiles('scripts/build-peaks.mjs') }}-${{ steps.week.outputs.week }}
+      - name: Build peak dataset
+        if: steps.peaks-cache.outputs.cache-hit != 'true'
+        # Ohne Datensatz fällt die App auf Live-Overpass zurück
+        continue-on-error: true
+        timeout-minutes: 30
+        run: node scripts/build-peaks.mjs
       - run: npm run build
       - uses: actions/upload-pages-artifact@v3
         with:

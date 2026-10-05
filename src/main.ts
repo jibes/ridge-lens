@@ -31,6 +31,11 @@ const radiusIn = $<HTMLInputElement>('radius');
 const presetSel = $<HTMLSelectElement>('preset');
 const hiddenIn = $<HTMLInputElement>('hidden');
 const statusEl = $<HTMLDivElement>('status');
+// Antippen zeigt lange Meldungen vollständig
+statusEl.addEventListener('click', () => {
+  statusEl.classList.toggle('expanded');
+  requestRender();
+});
 
 /**
  * Statuszeile = aktueller Zustand + dauerhafte Hinweise (GPS, Sensor).

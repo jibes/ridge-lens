@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { bearing, curvatureDrop, deltaDeg, destination, distance, elevationAngle } from './geo';
 import { decodeTerrarium, lonLatToPixel } from './dem';
 import { project } from './projection';
-import { parseEle, parseOverpassCsv, peakBBox } from './peaks';
+import { parseEle, parseOverpassCsv, peakBBox, rowsToPeaks, type PeakRow } from './peaks';
 
 const rigi = { lat: 47.0566, lon: 8.4851 };
 const pilatus = { lat: 46.979, lon: 8.2552 };
@@ -107,3 +107,14 @@ describe('overpass csv', () => {
   });
 });
 
+describe('bundled peak rows', () => {
+  it('converts rows and filters to bbox', () => {
+    const rows: PeakRow[] = [
+      [1, 46.97, 8.25, 2128, 'Pilatus', '', '', '', 'Monte Pilato'],
+      [2, 45.0, 8.25, 100, 'Outside', '', '', '', ''],
+    ];
+    expect(rowsToPeaks(rows, [46, 7, 48, 9])).toEqual([
+      { id: 1, name: 'Pilatus', names: { it: 'Monte Pilato' }, lat: 46.97, lon: 8.25, ele: 2128 },
+    ]);
+  });
+});

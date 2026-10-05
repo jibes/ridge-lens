@@ -88,9 +88,13 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.pill.wrap {
+.pill.wrap,
+.pill.expanded {
   white-space: normal;
   border-radius: 14px;
+}
+.pill {
+  cursor: pointer;
 }
 
 .toast {
