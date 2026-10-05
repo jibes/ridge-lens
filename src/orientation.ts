@@ -89,12 +89,30 @@ export class OrientationTracker {
 
   constructor(private onChange: () => void, private smoothing = 0.25) {}
 
-  /** Muss aus einem Klick-Handler aufgerufen werden (iOS-Berechtigung). */
-  async start(): Promise<void> {
+  /**
+   * Muss aus einem Klick-Handler aufgerufen werden (iOS-Berechtigung).
+   * Liefert das Ergebnis von requestPermission, falls vorhanden. Listener werden
+   * auch bei "denied" angehängt: Brave meldet das teils, obwohl Events kommen.
+   */
+  async start(): Promise<'granted' | 'denied' | null> {
     const req = (DeviceOrientationEvent as unknown as { requestPermission?: PermissionFn }).requestPermission;
-    if (req && (await req()) !== 'granted') throw new Error('Zugriff auf Bewegungssensoren verweigert');
+    const result = req ? await req.call(DeviceOrientationEvent).catch(() => 'denied' as const) : null;
     window.addEventListener('deviceorientationabsolute', this.handler);
     window.addEventListener('deviceorientation', this.handler);
+    return result;
+  }
+
+  /** Berechtigungsstatus der Sensoren (Chromium), soweit abfragbar. */
+  static async sensorPermissions(): Promise<Record<string, PermissionState | 'unbekannt'>> {
+    const out: Record<string, PermissionState | 'unbekannt'> = {};
+    for (const name of ['accelerometer', 'gyroscope', 'magnetometer']) {
+      try {
+        out[name] = (await navigator.permissions.query({ name } as unknown as PermissionDescriptor)).state;
+      } catch {
+        out[name] = 'unbekannt';
+      }
+    }
+    return out;
   }
 
   stop(): void {

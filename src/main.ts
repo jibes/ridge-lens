@@ -401,18 +401,11 @@ sensorBtn.addEventListener('click', async () => {
     sensorOn = false;
     cam.pitch = Math.max(-30, Math.min(30, cam.pitch));
   } else {
-    try {
-      await tracker.start();
-    } catch (err) {
-      statusEl.textContent = err instanceof Error ? err.message : String(err);
-      return;
-    }
+    const permission = await tracker.start();
     sensorOn = true;
     sensorText.textContent = 'Warte auf Sensordaten …';
     clearTimeout(sensorTimeout);
-    sensorTimeout = window.setTimeout(() => {
-      if (sensorOn && !tracker.angles) sensorText.textContent = 'Keine Orientierungsdaten – Gerät ohne Sensor oder keine HTTPS-Verbindung.';
-    }, 3000);
+    sensorTimeout = window.setTimeout(() => void explainMissingSensors(permission), 3000);
   }
   sensorBtn.classList.toggle('active', sensorOn);
   sensorBtn.setAttribute('aria-pressed', String(sensorOn));
@@ -421,6 +414,26 @@ sensorBtn.addEventListener('click', async () => {
   updateAlignBar();
   requestRender();
 });
+
+/** Keine Daten nach Aktivierung: Ursache eingrenzen und konkrete Abhilfe nennen. */
+async function explainMissingSensors(permission: 'granted' | 'denied' | null) {
+  if (!sensorOn || tracker.angles) return;
+  const perms = await OrientationTracker.sensorPermissions();
+  const blocked = Object.entries(perms)
+    .filter(([, s]) => s === 'denied')
+    .map(([n]) => n);
+  if (!window.isSecureContext) {
+    sensorText.textContent = 'Keine Sensordaten: Seite muss über HTTPS geladen werden.';
+  } else if (permission === 'denied' || blocked.length) {
+    sensorText.textContent =
+      `Bewegungssensoren blockiert${blocked.length ? ` (${blocked.join(', ')})` : ''}. ` +
+      'Brave/Chrome: Symbol links in der Adressleiste → Berechtigungen/Website-Einstellungen → ' +
+      'Bewegungssensoren → Zulassen. Bei Brave ggf. zusätzlich Shields für diese Seite aus. Dann neu laden.';
+  } else {
+    sensorText.textContent =
+      'Keine Sensordaten. Bei Brave: Shields für diese Seite deaktivieren (Fingerprinting-Schutz) und neu laden.';
+  }
+}
 
 $<HTMLButtonElement>('offset-reset').addEventListener('click', () => {
   offset.heading = 0;
