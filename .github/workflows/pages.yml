@@ -4,9 +4,9 @@ on:
   push:
     branches: [main, ccr-d1ee0c67-s1pl8d]
   workflow_dispatch:
-  # Gipfel-Datensatz wöchentlich auffrischen (Montag früh)
+  # Gipfel-Datensatz täglich ergänzen; aktuelle Blöcke (< 30 Tage) werden übersprungen
   schedule:
-    - cron: '17 3 * * 1'
+    - cron: '17 3 * * *'
 
 permissions:
   contents: read
