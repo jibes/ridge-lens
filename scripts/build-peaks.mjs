@@ -39,12 +39,12 @@ function parseEle(raw) {
   return Number.isFinite(v) && v > -500 && v < 9000 ? Math.round(v) : null;
 }
 
-/** CSV eines Blocks; null, wenn kein Server innerhalb des Budgets antwortet. */
-async function query(s, w) {
+/** CSV für ein Rechteck der Kantenlänge `size`; null, wenn kein Server antwortet. */
+async function query(s, w, size) {
   const fields = ['::id', '::lat', '::lon', 'ele', 'name', ...LANGS.map((l) => `"name:${l}"`)].join(',');
-  const q = `[out:csv(${fields};false;"\\t")][timeout:120][bbox:${s},${w},${s + BLOCK},${w + BLOCK}];node["natural"="peak"]["name"];out qt;`;
+  const q = `[out:csv(${fields};false;"\\t")][timeout:90][bbox:${s},${w},${s + size},${w + size}];node["natural"="peak"]["name"];out qt;`;
   for (const ep of ENDPOINTS) {
-    const timeout = Math.min(150_000, left());
+    const timeout = Math.min(100_000, left());
     if (timeout < 20_000) return null;
     try {
       const res = await fetch(ep, {
@@ -97,6 +97,26 @@ for (let s = REGION.south; s < REGION.north; s += BLOCK) {
 }
 const age = (key) => (state[key] ? (Date.now() - Date.parse(state[key])) / 86_400_000 : Infinity);
 const dist = ([s, w]) => Math.hypot(s + BLOCK / 2 - CENTER.lat, (w + BLOCK / 2 - CENTER.lon) * 0.7);
+/**
+ * CSV eines 2°-Blocks. Dichte Blöcke laufen bei überlasteten Servern ins Timeout;
+ * dann in vier 1°-Teilabfragen zerlegen. Null, wenn ein Teil fehlt.
+ */
+async function fetchBlock(s, w) {
+  const whole = await query(s, w, BLOCK);
+  if (whole !== null) return whole;
+  console.warn(`block ${s},${w}: splitting into 1° parts`);
+  const parts = [];
+  for (let la = s; la < s + BLOCK; la++) {
+    for (let lo = w; lo < w + BLOCK; lo++) {
+      const part = await query(la, lo, 1);
+      if (part === null) return null;
+      parts.push(part);
+      await sleep(PAUSE_MS);
+    }
+  }
+  return parts.join('\n');
+}
+
 const todo = blocks
   .filter(([s, w]) => age(`${s}_${w}`) > MAX_AGE_DAYS)
   // fehlende zuerst, dann älteste; innerhalb davon von der Mitte nach außen
@@ -106,7 +126,7 @@ console.log(`${blocks.length - todo.length}/${blocks.length} blocks current, ${t
 let fetched = 0;
 for (const [s, w] of todo) {
   if (left() < 30_000) break;
-  const text = await query(s, w);
+  const text = await fetchBlock(s, w);
   if (text === null) {
     console.warn(`block ${s},${w}: skipped`);
     await sleep(5_000);

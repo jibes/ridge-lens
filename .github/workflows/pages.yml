@@ -33,7 +33,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: public/peaks
-          key: peaks-v2-${{ github.run_id }}
+          key: peaks-v2-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: peaks-v2-
       - name: Build peak dataset
         # Ohne (vollständigen) Datensatz fällt die App auf Live-Overpass zurück
