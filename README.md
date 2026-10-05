@@ -14,6 +14,12 @@ npm run build    # nach dist/
 
 Zustand steckt in der URL: `#lat,lon,höhe,blickrichtung,sichtfeld`, z. B. `#47.0566,8.4851,1797,213,20` (Rigi Kulm, Blick auf die Jungfrau). Höhe leer lassen = aus dem Höhenmodell.
 
+## App installieren
+
+Android (Chrome/Brave): Knopf „Installieren“ oder Browsermenü → „Zum Startbildschirm hinzufügen“. iOS (Safari): Teilen → „Zum Home-Bildschirm“.
+
+Der Service Worker (`public/sw.js`) hält die App-Shell und alle geladenen Höhenkacheln im Cache; Gipfel liegen im Cache der App. Einmal mit Netz berechnete Standorte funktionieren danach offline.
+
 ## Sensormodus
 
 „Sensor“ aktiviert die Geräteorientierung (iOS fragt nach Erlaubnis). Der Blick folgt dann dem Handy, das rote Fadenkreuz markiert die Blickrichtung der Rückkamera.

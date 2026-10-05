@@ -450,6 +450,29 @@ window.addEventListener('hashchange', () => {
   }
 });
 
+// --- Installierbare App (PWA) ------------------------------------------------------
+
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
+  navigator.serviceWorker.register('./sw.js').catch((err) => console.warn('Service Worker:', err));
+}
+
+interface InstallPromptEvent extends Event {
+  prompt(): Promise<void>;
+}
+const installBtn = $<HTMLButtonElement>('install');
+let installPrompt: InstallPromptEvent | null = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installPrompt = e as InstallPromptEvent;
+  installBtn.hidden = false;
+});
+installBtn.addEventListener('click', async () => {
+  await installPrompt?.prompt();
+  installPrompt = null;
+  installBtn.hidden = true;
+});
+window.addEventListener('appinstalled', () => (installBtn.hidden = true));
+
 // --- Start ------------------------------------------------------------------------
 
 if (!readHash()) {

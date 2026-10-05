@@ -4,6 +4,12 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Ridge Lens</title>
+    <meta name="theme-color" content="#4f86c6" />
+    <meta name="description" content="Sichtbare Bergketten und Gipfelnamen aus Standort und Handy-Ausrichtung" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
@@ -21,6 +27,7 @@
         <button type="button" id="gps">GPS</button>
         <button type="button" id="sensor" aria-pressed="false" title="Blick folgt der Ausrichtung des Handys">Sensor</button>
         <button type="submit">Berechnen</button>
+        <button type="button" id="install" hidden>Installieren</button>
         <label class="check"><input id="hidden" type="checkbox" /> verdeckte Gipfel</label>
       </form>
       <div id="status">Bereit.</div>
