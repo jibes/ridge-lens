@@ -73,4 +73,8 @@ Technik (`src/orientation.ts`): Rotationsmatrix aus α/β/γ (W3C), Blickachse =
 
 ## Datenquellen
 
-Höhendaten: AWS Terrain Tiles ([Quellen](https://github.com/tilezen/joerd/blob/master/docs/attribution.md)). Gipfel: © OpenStreetMap-Mitwirkende, ODbL.
+Höhendaten: AWS Terrain Tiles ([Quellen](https://github.com/tilezen/joerd/blob/master/docs/attribution.md)). Gipfel: © OpenStreetMap-Mitwirkende, [ODbL](https://www.openstreetmap.org/copyright); gilt auch für den mitgelieferten Datensatz (`public/peaks`, Branch `peaks-data`).
+
+## Lizenz
+
+Quellcode: [MIT](LICENSE). Daten: siehe oben, nicht MIT.
