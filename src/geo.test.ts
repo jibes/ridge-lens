@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { bearing, curvatureDrop, deltaDeg, destination, distance, elevationAngle } from './geo';
 import { decodeTerrarium, lonLatToPixel } from './dem';
 import { project } from './projection';
-import { parseEle } from './peaks';
+import { parseEle, parseOverpassCsv, peakBBox } from './peaks';
 
 const rigi = { lat: 47.0566, lon: 8.4851 };
 const pilatus = { lat: 46.979, lon: 8.2552 };
@@ -84,3 +84,21 @@ describe('peaks', () => {
     expect(parseEle(undefined)).toBeNull();
   });
 });
+
+describe('overpass csv', () => {
+  it('parses rows, prefers name:de, skips incomplete lines', () => {
+    const csv = '1\t46.97\t8.25\tPilatus\t\t2128\n2\t46.55\t7.96\tJungfrau\tJungfrau\t4158\n3\t46.6\t8.0\tCervin\tMatterhorn\t4478\n\n';
+    const peaks = parseOverpassCsv(csv);
+    expect(peaks.map((p) => p.name)).toEqual(['Pilatus', 'Jungfrau', 'Matterhorn']);
+    expect(peaks[0]).toEqual({ id: 1, name: 'Pilatus', lat: 46.97, lon: 8.25, ele: 2128 });
+  });
+
+  it('bbox covers the radius and is rounded outward', () => {
+    const [s, w, n, e] = peakBBox(rigi, 100_000);
+    expect(s).toBeLessThan(rigi.lat - 0.9);
+    expect(n).toBeGreaterThan(rigi.lat + 0.9);
+    expect(e - w).toBeGreaterThan(2.6);
+    expect(Math.round(s * 20)).toBeCloseTo(s * 20, 6);
+  });
+});
+

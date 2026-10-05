@@ -9,11 +9,15 @@ export interface PeakRaw {
   ele: number | null;
 }
 
+// Öffentliche Overpass-Instanzen; bei Überlastung (429/504, ohne CORS → "Failed to fetch") nächste versuchen
 const ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
 ];
-const CACHE_NAME = 'ridge-lens-peaks-v1';
+const CACHE_NAME = 'ridge-lens-peaks-v2';
+const TIMEOUT_MS = 30_000;
 
 /** OSM-`ele` ist Freitext ("2'345", "1234 m", "1234;1236"); erste Zahl in Metern. */
 export function parseEle(raw: string | undefined): number | null {
@@ -25,47 +29,60 @@ export function parseEle(raw: string | undefined): number | null {
   return Number.isFinite(v) && v > -500 && v < 9000 ? v : null;
 }
 
-interface OverpassNode {
-  type: string;
-  id: number;
-  lat: number;
-  lon: number;
-  tags?: Record<string, string>;
-}
-
-export function parseOverpass(json: { elements: OverpassNode[] }): PeakRaw[] {
+/** Overpass-CSV (Tab-getrennt): id, lat, lon, name, name:de, ele. */
+export function parseOverpassCsv(text: string): PeakRaw[] {
   const out: PeakRaw[] = [];
-  for (const el of json.elements) {
-    const name = el.tags?.['name:de'] ?? el.tags?.name;
-    if (el.type !== 'node' || !name) continue;
-    out.push({ id: el.id, name, lat: el.lat, lon: el.lon, ele: parseEle(el.tags?.ele) });
+  for (const line of text.split('\n')) {
+    const [id, lat, lon, name, nameDe, ele] = line.split('\t');
+    const label = nameDe || name;
+    if (!label || !lat || !lon) continue;
+    out.push({ id: Number(id), name: label, lat: Number(lat), lon: Number(lon), ele: parseEle(ele) });
   }
   return out;
 }
 
-/** Gipfel im Umkreis; Anfrage auf 0.01° gerundet, damit der Browser-Cache greift. */
+/** Rechteck (S, W, N, O) um den Kreis, nach außen auf 0.05° gerundet: stabiler Cache-Schlüssel. */
+export function peakBBox(center: LatLon, radius: number): [number, number, number, number] {
+  const dLat = (radius + 1500) / 111_195;
+  const dLon = dLat / Math.cos((center.lat * Math.PI) / 180);
+  const down = (v: number) => Math.floor(v * 20) / 20;
+  const up = (v: number) => Math.ceil(v * 20) / 20;
+  return [down(center.lat - dLat), down(center.lon - dLon), up(center.lat + dLat), up(center.lon + dLon)];
+}
+
+/** Benannte Gipfel im Rechteck um den Kreis (Rechteck ist für Overpass deutlich billiger als `around`). */
 export async function fetchPeaks(center: LatLon, radius: number): Promise<PeakRaw[]> {
-  const lat = center.lat.toFixed(2);
-  const lon = center.lon.toFixed(2);
-  const r = Math.ceil(radius + 1500);
-  const query = `[out:json][timeout:90];node["natural"="peak"]["name"](around:${r},${lat},${lon});out body;`;
+  const bbox = peakBBox(center, radius)
+    .map((v) => v.toFixed(2))
+    .join(',');
+  const query =
+    `[out:csv(::id,::lat,::lon,name,"name:de",ele;false;"\t")][timeout:60][bbox:${bbox}];` +
+    `node["natural"="peak"]["name"];out qt;`;
   const qs = `?data=${encodeURIComponent(query)}`;
 
   const cache = await caches.open(CACHE_NAME).catch(() => null);
-  const cacheKey = ENDPOINTS[0] + qs;
+  const cacheKey = `https://ridge-lens.local/peaks?bbox=${bbox}`;
   const hit = await cache?.match(cacheKey);
-  if (hit) return parseOverpass(await hit.json());
+  if (hit) return (await hit.json()) as PeakRaw[];
 
-  let lastErr: unknown;
+  const errors: string[] = [];
   for (const ep of ENDPOINTS) {
     try {
-      const res = await fetch(ep + qs);
-      if (!res.ok) throw new Error(`Overpass ${res.status}`);
-      await cache?.put(cacheKey, res.clone()).catch(() => {});
-      return parseOverpass(await res.json());
+      const res = await fetch(ep + qs, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      // Overpass meldet Laufzeitfehler mit Status 200 als HTML/Remark
+      if (/<html|runtime error/i.test(text.slice(0, 500))) throw new Error('Serverfehler');
+      const peaks = parseOverpassCsv(text);
+      if (!peaks.length && text.trim() && !text.includes('\t')) throw new Error('unerwartete Antwort');
+      await cache
+        ?.put(cacheKey, new Response(JSON.stringify(peaks), { headers: { 'Content-Type': 'application/json' } }))
+        .catch(() => {});
+      return peaks;
     } catch (e) {
-      lastErr = e;
+      const msg = e instanceof Error ? (e.name === 'TimeoutError' ? 'Zeitüberschreitung' : e.message) : String(e);
+      errors.push(`${new URL(ep).hostname}: ${msg}`);
     }
   }
-  throw lastErr;
+  throw new Error(`kein Overpass-Server erreichbar (${errors.join('; ')})`);
 }
