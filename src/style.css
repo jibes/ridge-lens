@@ -176,6 +176,102 @@ body {
   white-space: nowrap;
 }
 
+/* Ziel der Suche: über der Sensoranzeige */
+.target {
+  bottom: calc(var(--safe-bottom) + 132px);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 12px;
+  max-width: calc(100% - 32px);
+}
+#target-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.target .icon-btn.small {
+  width: 26px;
+  height: 26px;
+}
+
+/* Suche: Feld oben, Trefferliste darunter */
+.search {
+  position: absolute;
+  top: calc(var(--safe-top) + 8px);
+  left: 12px;
+  right: 12px;
+  margin: 0 auto;
+  max-width: 520px;
+  border-radius: var(--radius);
+  background: var(--surface-strong);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.search-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px 4px 12px;
+}
+.search-field > svg {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+#search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-size: 16px; /* verhindert Zoom auf iOS */
+}
+#search-input::-webkit-search-cancel-button {
+  display: none;
+}
+#search-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+#search-results:not(:empty) {
+  border-top: 1px solid var(--border);
+}
+#search-results button {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 9px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+#search-results button:hover,
+#search-results button:focus-visible {
+  background: var(--input-bg);
+  outline: none;
+}
+#search-results .meta,
+#search-results .empty {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+#search-results .empty {
+  padding: 10px 14px;
+}
+
 .dock {
   position: absolute;
   bottom: calc(var(--safe-bottom) + 16px);

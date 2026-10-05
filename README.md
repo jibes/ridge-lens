@@ -20,7 +20,9 @@ Beim Öffnen: Bildschirm bleibt an (Screen Wake Lock), Standort per GPS, auf Tou
 
 ## Bedienung
 
-Vollbild-Panorama, unten zwei Knöpfe: Einstellungen (Ort, Koordinaten, Höhe, Sichtweite, Kompass-Korrektur, Installieren) und Standort neu bestimmen. Farben folgen dem Hell-/Dunkelmodus des Systems. Ohne Sensor: ziehen, Pinch/Mausrad, 360°-Übersicht antippen.
+Vollbild-Panorama, unten Knöpfe für Einstellungen (Ort, Koordinaten, Höhe, Sichtweite, Kompass-Korrektur, Installieren), Suche, Kamera und Standort.
+
+**Suche:** findet geladene Gipfel im Umkreis nach Name oder Übersetzung (ohne Akzente, `src/search.ts`). Der gewählte Gipfel wird Ziel: im Bild mit Ring markiert, außerhalb zeigt ein Pfeil am Rand mit Gradzahl die Drehrichtung (bzw. höher/tiefer), ein Hinweis unten sagt es in Worten, die 360°-Übersicht markiert die Richtung. Ohne Sensor dreht sich der Blick direkt zum Ziel. Farben folgen dem Hell-/Dunkelmodus des Systems. Ohne Sensor: ziehen, Pinch/Mausrad, 360°-Übersicht antippen.
 
 ## Sprachen
 

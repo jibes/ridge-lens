@@ -87,6 +87,10 @@ export interface RenderOptions {
   /** Fadenkreuz in Bildmitte (Sensormodus). */
   crosshair: boolean;
   selectedPeakId: number | null;
+  /** Gesuchter Gipfel: hervorgehoben, außerhalb des Bilds zeigt ein Pfeil die Drehrichtung. */
+  targetPeakId: number | null;
+  /** Unten freizuhaltender Bereich (px), z. B. Bedienleiste. */
+  bottomInset: number;
   /** Freizuhaltender Bereich oben (px), z. B. für die Statuszeile. */
   topInset: number;
   /** Kamerabild darunter: keine Himmel-/Geländeflächen, Linien mit Schatten. */
@@ -138,6 +142,8 @@ export function renderView(
   drawCompass(ctx, cam, proj, pal, scaleY, opts.compass);
   const placed = pano ? drawPeaks(ctx, cam, pano, opts, proj, scaleY + 26) : [];
   if (opts.crosshair) drawCrosshair(ctx, cam, pal);
+  const target = opts.targetPeakId === null ? undefined : pano?.peaks.find((p) => p.id === opts.targetPeakId);
+  if (target) drawTarget(ctx, cam, target, proj, pal, scaleY + 26, opts.bottomInset);
   return placed;
 }
 
@@ -252,6 +258,74 @@ function drawCrosshair(ctx: CanvasRenderingContext2D, cam: Camera, pal: Palette)
   ctx.restore();
 }
 
+/** Drehrichtung zum Ziel: Grad nach rechts (+) bzw. links (−), oder 0 wenn waagrecht im Bild. */
+export function turnToTarget(cam: Camera, az: number): number {
+  const d = deltaDeg(az, cam.heading);
+  return Math.abs(d) <= cam.hfov / 2 ? 0 : d;
+}
+
+/**
+ * Ziel im Bild: Ring um den Gipfel. Außerhalb: Pfeil am Rand in Drehrichtung
+ * (links/rechts, bzw. oben/unten wenn nur die Neigung fehlt) mit Gradzahl.
+ */
+function drawTarget(ctx: CanvasRenderingContext2D, cam: Camera, peak: Peak, proj: Project, pal: Palette, top: number, bottomInset: number) {
+  const W = cam.width;
+  const bottom = cam.height - bottomInset;
+  const p = azimuthInView(cam, peak.az, 0) ? proj(peak.az, peak.angle) : null;
+  ctx.save();
+  if (p && p[0] >= 0 && p[0] <= W && p[1] >= top && p[1] <= bottom) {
+    ctx.strokeStyle = pal.accent;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], 13, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+  const r = 19;
+  const m = r + 8;
+  const d = deltaDeg(peak.az, cam.heading);
+  let x: number;
+  let y: number;
+  let dir: number; // Pfeilrichtung (rad, 0 = rechts)
+  let deg: number;
+  if (p && p[0] >= 0 && p[0] <= W) {
+    const up = p[1] < top;
+    x = Math.min(W - m, Math.max(m, p[0]));
+    y = up ? top + m : bottom - m;
+    dir = up ? -Math.PI / 2 : Math.PI / 2;
+    deg = Math.abs(peak.angle - cam.pitch);
+  } else {
+    x = d > 0 ? W - m : m;
+    y = Math.min(bottom - m, Math.max(top + m, p ? p[1] : cam.height / 2));
+    dir = d > 0 ? 0 : Math.PI;
+    deg = Math.abs(d);
+  }
+  ctx.shadowColor = 'rgba(0,0,0,0.35)';
+  ctx.shadowBlur = 8;
+  ctx.fillStyle = pal.accent;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.translate(x, y);
+  ctx.fillStyle = '#fff';
+  ctx.font = `700 11px ${FONT}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`${Math.round(deg)}°`, 0, 0.5);
+  // Pfeilspitze außen am Kreis
+  ctx.rotate(dir);
+  ctx.beginPath();
+  ctx.moveTo(r + 7, 0);
+  ctx.lineTo(r - 1, -7);
+  ctx.lineTo(r - 1, 7);
+  ctx.closePath();
+  ctx.fillStyle = pal.accent;
+  ctx.fill();
+  ctx.restore();
+}
+
 /**
  * Bekanntheit eines Gipfels fürs Ausdünnen der Labels: Wikipedia-Sprachversionen
  * (≥ 64 ≈ Matterhorn zählt voll), Hervortreten über die Silhouette, Höhe.
@@ -273,7 +347,7 @@ function drawPeaks(
   const pal = opts.palette;
   const cands: PlacedLabel[] = [];
   for (const peak of pano.peaks) {
-    const selected = peak.id === opts.selectedPeakId;
+    const selected = peak.id === opts.selectedPeakId || peak.id === opts.targetPeakId;
     if (!peak.visible && !opts.showHidden && !selected) continue;
     if (!azimuthInView(cam, peak.az, 1)) continue;
     const p = proj(peak.az, peak.angle);
@@ -281,7 +355,8 @@ function drawPeaks(
     cands.push({ peak, x: p[0], y: p[1] });
   }
   // Priorität: ausgewählt, sichtbar vor verdeckt, dann Bekanntheit
-  const rank = (l: PlacedLabel) => (l.peak.id === opts.selectedPeakId ? 2 : l.peak.visible ? 1 : 0);
+  const rank = (l: PlacedLabel) =>
+    l.peak.id === opts.selectedPeakId || l.peak.id === opts.targetPeakId ? 2 : l.peak.visible ? 1 : 0;
   cands.sort((a, b) => rank(b) - rank(a) || labelScore(b.peak) - labelScore(a.peak));
   const placed: PlacedLabel[] = [];
   const minGap = 18;
@@ -294,7 +369,7 @@ function drawPeaks(
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
   for (const { peak, x, y } of placed) {
-    const selected = peak.id === opts.selectedPeakId;
+    const selected = peak.id === opts.selectedPeakId || peak.id === opts.targetPeakId;
     const name = opts.peakName(peak);
     const meta = `${Math.round(peak.ele)} m · ${(peak.dist / 1000).toFixed(peak.dist < 10_000 ? 1 : 0)} km`;
     ctx.font = nameFont;
@@ -343,6 +418,7 @@ export function renderOverview(
   pano: PanoramaResult | null,
   pal: Palette,
   compass: string[],
+  targetAz: number | null = null,
 ) {
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = pal.overviewBg;
@@ -374,6 +450,17 @@ export function renderOverview(
   ctx.lineWidth = 1.5;
   for (const off of [0, -W]) {
     ctx.strokeRect(x0 + off + 0.75, 0.75, w - 1.5, H - 1.5);
+  }
+  // Ziel der Suche: Dreieck am unteren Rand
+  if (targetAz !== null) {
+    const tx = (normalizeDeg(targetAz) / 360) * W;
+    ctx.fillStyle = pal.accent;
+    ctx.beginPath();
+    ctx.moveTo(tx, H - 9);
+    ctx.lineTo(tx - 5, H);
+    ctx.lineTo(tx + 5, H);
+    ctx.closePath();
+    ctx.fill();
   }
   ctx.fillStyle = pal.scale;
   ctx.font = `600 10px ${FONT}`;

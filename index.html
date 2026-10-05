@@ -38,9 +38,30 @@
 
       <div id="sensor-info" class="readout" hidden><span id="sensor-text"></span></div>
 
+      <div id="target" class="readout target" hidden>
+        <span id="target-text"></span>
+        <button type="button" id="target-close" class="icon-btn small" data-i18n-aria="aria.close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
+      </div>
+
+      <section id="search" class="search" hidden data-i18n-aria="aria.search">
+        <div class="search-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="M15.5 15.5L20 20" /></svg>
+          <input id="search-input" type="search" autocomplete="off" spellcheck="false" enterkeyhint="search" data-i18n-placeholder="search.placeholder" />
+          <button type="button" id="search-close" class="icon-btn small" data-i18n-aria="aria.close">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+        <ul id="search-results" role="listbox"></ul>
+      </section>
+
       <nav class="dock" data-i18n-aria="aria.controls">
         <button type="button" id="menu" class="icon-btn" data-i18n-aria="aria.settings" aria-expanded="false" aria-controls="panel">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></svg>
+        </button>
+        <button type="button" id="search-open" class="icon-btn" data-i18n-aria="aria.search" aria-expanded="false" aria-controls="search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="M15.5 15.5L20 20" /></svg>
         </button>
         <button type="button" id="camera-toggle" class="icon-btn" data-i18n-aria="aria.camera" aria-pressed="false">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-2.5h6L17 8h3v11H4z" /><circle cx="12" cy="13" r="3.5" /></svg>

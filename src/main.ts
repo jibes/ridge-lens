@@ -6,7 +6,8 @@ import type { ComputeRequest, PanoramaResult, Peak, WorkerMessage } from './prot
 import { applyDom, compassLabels, detectLang, lang, setLang, storedLangChoice, storeLangChoice, t, type Lang } from './i18n';
 import { CameraFeed, DEFAULT_CAMERA_FOV, displayHfov, fovLongFromDisplay } from './camera';
 import type { VisionRequest, VisionResponse } from './vision-worker';
-import { CAMERA, DARK, LIGHT, renderOverview, renderView, type PlacedLabel } from './render';
+import { CAMERA, DARK, LIGHT, renderOverview, renderView, turnToTarget, type PlacedLabel } from './render';
+import { searchPeaks } from './search';
 
 interface Preset {
   name: string;
@@ -79,6 +80,8 @@ let pano: PanoramaResult | null = null;
 let labels: PlacedLabel[] = [];
 let busy = false;
 let selected: Peak | null = null;
+/** Gesuchter Gipfel (Id, bleibt über Neuberechnungen erhalten). */
+let targetId: number | null = null;
 
 // Sensormodus: Blick folgt dem Gerät; Ziehen/Anpeilen korrigiert den Kompass
 const tracker = new OrientationTracker(() => {
@@ -156,6 +159,7 @@ function requestRender() {
 function render() {
   frame = 0;
   syncSensor();
+  syncTarget();
   syncCameraFov();
   updateNoise();
   const dpr = devicePixelRatio || 1;
@@ -167,6 +171,8 @@ function render() {
     showHidden: hiddenIn.checked,
     crosshair: sensorOn,
     selectedPeakId: selected?.id ?? null,
+    targetPeakId: targetId,
+    bottomInset: view.getBoundingClientRect().bottom - (targetChip.hidden ? dockEl : targetChip).getBoundingClientRect().top + 8,
     peakName,
     compass: compassLabels(8),
     // Skala und Labels unterhalb der Statuszeile beginnen
@@ -175,7 +181,8 @@ function render() {
   });
   if (overview.clientWidth) {
     overCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    renderOverview(overCtx, overview.clientWidth, overview.clientHeight, cam, pano, palette, compassLabels(8));
+    const targetAz = targetId === null ? null : (pano?.peaks.find((p) => p.id === targetId)?.az ?? null);
+    renderOverview(overCtx, overview.clientWidth, overview.clientHeight, cam, pano, palette, compassLabels(8), targetAz);
   }
 }
 
@@ -290,7 +297,10 @@ function setPanel(open: boolean) {
 menuBtn.addEventListener('click', () => setPanel(panel.hidden !== false));
 $<HTMLButtonElement>('panel-close').addEventListener('click', () => setPanel(false));
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') setPanel(false);
+  if (e.key === 'Escape') {
+    setPanel(false);
+    setSearch(false);
+  }
 });
 
 form.addEventListener('submit', (e) => {
@@ -508,6 +518,97 @@ $<HTMLButtonElement>('align-close').addEventListener('click', () => {
   updateAlignBar();
   requestRender();
 });
+
+// --- Suche ------------------------------------------------------------------------
+
+const searchBox = $<HTMLElement>('search');
+const searchBtn = $<HTMLButtonElement>('search-open');
+const searchInput = $<HTMLInputElement>('search-input');
+const searchResults = $<HTMLUListElement>('search-results');
+const targetChip = $<HTMLDivElement>('target');
+const targetText = $<HTMLSpanElement>('target-text');
+const dockEl = document.querySelector<HTMLElement>('.dock')!;
+
+function setSearch(open: boolean) {
+  searchBox.hidden = !open;
+  searchBtn.setAttribute('aria-expanded', String(open));
+  if (open) {
+    setPanel(false);
+    searchInput.value = '';
+    showResults();
+    searchInput.focus();
+  }
+}
+searchBtn.addEventListener('click', () => setSearch(searchBox.hidden !== false));
+$<HTMLButtonElement>('search-close').addEventListener('click', () => setSearch(false));
+searchInput.addEventListener('input', showResults);
+searchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') searchResults.querySelector('button')?.click();
+});
+
+function showResults() {
+  const q = searchInput.value;
+  const hits = searchPeaks(pano?.peaks ?? [], q);
+  searchResults.replaceChildren(
+    ...hits.map((p) => {
+      const li = document.createElement('li');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      const name = document.createElement('span');
+      name.textContent = peakName(p);
+      const meta = document.createElement('span');
+      meta.className = 'meta';
+      const dir = compassLabels(16)[Math.round(p.az / 22.5) % 16];
+      meta.textContent =
+        `${Math.round(p.ele)} m · ${(p.dist / 1000).toFixed(p.dist < 10_000 ? 1 : 0)} km · ${dir} ${Math.round(p.az)}°` +
+        (p.visible ? '' : ` · ${t('peak.hidden')}`);
+      btn.append(name, meta);
+      btn.addEventListener('click', () => setTarget(p));
+      li.append(btn);
+      return li;
+    }),
+  );
+  if (q.trim() && !hits.length) {
+    const li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = t('search.none');
+    searchResults.append(li);
+  }
+}
+
+/** Ziel setzen; ohne Sensor dreht sich der Blick direkt hin. */
+function setTarget(p: Peak | null) {
+  targetId = p?.id ?? null;
+  setSearch(false);
+  if (p && !sensorOn) {
+    cam.heading = p.az;
+    cam.pitch = Math.max(-30, Math.min(30, p.angle));
+    writeHash();
+  }
+  requestRender();
+}
+$<HTMLButtonElement>('target-close').addEventListener('click', () => setTarget(null));
+
+/** Ziel-Chip: Name und Drehrichtung in Worten. */
+function syncTarget() {
+  const p = targetId === null ? undefined : pano?.peaks.find((q) => q.id === targetId);
+  targetChip.hidden = !p;
+  if (!p) return;
+  const name = peakName(p);
+  const turn = turnToTarget(cam, p.az);
+  const vfov = (cam.hfov * cam.height) / cam.width;
+  const dp = p.angle - cam.pitch;
+  targetText.textContent =
+    turn > 0
+      ? t('target.right', { name, deg: Math.round(turn) })
+      : turn < 0
+        ? t('target.left', { name, deg: Math.round(-turn) })
+        : dp > vfov / 2
+          ? t('target.up', { name })
+          : dp < -vfov / 2
+            ? t('target.down', { name })
+            : t('target.inView', { name });
+}
 
 // --- Sensormodus -------------------------------------------------------------------
 
