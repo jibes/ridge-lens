@@ -146,6 +146,7 @@ function requestRender() {
 function render() {
   frame = 0;
   syncSensor();
+  updateNoise();
   const dpr = devicePixelRatio || 1;
   const palette = darkScheme.matches ? DARK : LIGHT;
   viewCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -471,6 +472,14 @@ function syncSensor() {
     `${dir} ${cam.heading.toFixed(0)}°` +
     (corrected ? ` · ${t('sensor.corrected', { offset: fmtSigned(offset.heading) })}` : '') +
     (tracker.status === 'relative' ? ` · ${t('sensor.noCompass')}` : '');
+}
+
+/** Rauschanzeige im offenen Einstellungsblatt: zeigt, welche Achse zittert. */
+const noiseEl = $<HTMLParagraphElement>('sensor-noise');
+function updateNoise() {
+  const n = sensorOn && panel.hidden === false ? tracker.noise : null;
+  noiseEl.hidden = !n;
+  if (n) noiseEl.textContent = t('settings.noise', { h: n.heading.toFixed(1), p: n.pitch.toFixed(1), r: n.roll.toFixed(1) });
 }
 
 /** Sensormodus ist an, sobald Orientierungsdaten kommen; vorher und ohne Sensor: manuell. */

@@ -79,15 +79,15 @@ export type OrientationStatus = 'absolute' | 'relative';
  * iOS: α ist relativ; Nordbezug über `webkitCompassHeading` als gleitende Konstante.
  */
 export class OrientationTracker {
-  private f: Vec3 | null = null;
-  private r: Vec3 | null = null;
+  private filtered: ViewAngles | null = null;
   /** iOS: α_abs = α + iosOffset (Einheitsvektor für Kreismittel) */
   private iosOffset: [number, number] | null = null;
   private lastAbsolute = 0;
   private handler = (e: Event) => this.onEvent(e as WebkitOrientationEvent);
   status: OrientationStatus | null = null;
 
-  private smoother = new OrientationSmoother();
+  private smoother = new AngleSmoother();
+  private noiseMeter = new NoiseMeter();
 
   constructor(private onChange: () => void) {}
 
@@ -109,8 +109,14 @@ export class OrientationTracker {
   }
 
   get angles(): ViewAngles | null {
-    return this.f && this.r ? viewAngles(this.f, this.r) : null;
+    return this.filtered;
   }
+
+  /** Streuung der Rohwerte (Standardabweichung, Grad) der letzten 2 s je Achse. */
+  get noise(): ViewAngles | null {
+    return this.noiseMeter.std();
+  }
+
 
   private onEvent(e: WebkitOrientationEvent): void {
     if (e.alpha === null || e.beta === null || e.gamma === null) return;
@@ -139,58 +145,103 @@ export class OrientationTracker {
     }
     const angle = screen.orientation?.angle ?? (window as unknown as { orientation?: number }).orientation ?? 0;
     const v = deviceVectors(alpha, e.beta, e.gamma, angle);
-    [this.f, this.r] = this.smoother.update(v.f, v.r, e.timeStamp);
+    const raw = viewAngles(v.f, v.r);
+    this.noiseMeter.add(raw, e.timeStamp);
+    this.filtered = this.smoother.update(raw, e.timeStamp);
     this.onChange();
   }
 }
 
-/** Grenzfrequenz in Ruhe (Hz): starke Glättung gegen Zittern des Magnetometers. */
-const FC_MIN = 0.4;
-/** Zusätzliche Grenzfrequenz je Grad Abweichung (Hz/°): schnelle Schwenks folgen ohne Verzögerung. */
-const FC_PER_DEG = 0.25;
-
 /**
- * Adaptiver Tiefpass (Prinzip One-Euro-Filter) auf Blickachse und Bildkante.
- * Zeitbasiert, daher unabhängig von der Eventrate; arbeitet auf Einheitsvektoren
- * (kein 0°/360°-Sprung). Grenzfrequenz steigt mit der Abweichung zwischen
- * Messung und geglättetem Wert: kleines Rauschen wird stark gedämpft, echte
- * Drehungen kaum verzögert.
+ * One-Euro-Filter (Casiez et al. 2012): Tiefpass, dessen Grenzfrequenz mit der
+ * (selbst geglätteten) Änderungsgeschwindigkeit steigt. In Ruhe stark gedämpft,
+ * bei echten Bewegungen wenig Verzögerung. Rauschen hebt die Grenzfrequenz kaum,
+ * weil die Geschwindigkeit vorher gefiltert wird.
  */
-export class OrientationSmoother {
-  private f: Vec3 | null = null;
-  private r: Vec3 | null = null;
+export class OneEuro {
+  private x: number | null = null;
+  private dx = 0;
   private t = 0;
 
+  constructor(
+    private fcMin: number,
+    private beta: number,
+    private dCutoff = 1,
+  ) {}
+
   reset(): void {
-    this.f = this.r = null;
+    this.x = null;
+    this.dx = 0;
   }
 
-  update(f: Vec3, r: Vec3, timeMs: number): [Vec3, Vec3] {
-    if (!this.f || !this.r) {
-      this.f = f;
-      this.r = r;
+  filter(value: number, timeMs: number): number {
+    if (this.x === null) {
+      this.x = value;
       this.t = timeMs;
-      return [f, r];
+      return value;
     }
-    const dt = Math.min(0.2, Math.max(0, (timeMs - this.t) / 1000));
+    const dt = Math.min(0.2, Math.max(1e-3, (timeMs - this.t) / 1000));
     this.t = timeMs;
-    const dev = Math.max(angleBetween(this.f, f), angleBetween(this.r, r));
-    const fc = FC_MIN + FC_PER_DEG * dev;
-    const alpha = 1 - Math.exp(-dt * 2 * Math.PI * fc);
-    this.f = blend(this.f, f, alpha);
-    this.r = blend(this.r, r, alpha);
-    return [this.f, this.r];
+    const a = (fc: number) => 1 - Math.exp(-dt * 2 * Math.PI * fc);
+    this.dx += a(this.dCutoff) * ((value - this.x) / dt - this.dx);
+    this.x += a(this.fcMin + this.beta * Math.abs(this.dx)) * (value - this.x);
+    return this.x;
   }
 }
 
-function angleBetween(a: Vec3, b: Vec3): number {
-  const d = Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]));
-  return Math.acos(d) * DEG;
+/**
+ * Glättung je Achse. Der Kurs (Magnetometer) rauscht am stärksten und wird am
+ * trägsten gefiltert; Neigung/Rolle (Beschleunigung + Gyro) sind ruhiger.
+ * Grenzfrequenzen in Hz in Ruhe; beta in Hz pro °/s.
+ */
+export class AngleSmoother {
+  // abgestimmt per Simulation: ±2° Rauschen → ±0,2°, Schwenk 60°/s nach 0,4 s eingeholt
+  private heading = new OneEuro(0.06, 0.01, 0.3);
+  private pitch = new OneEuro(0.15, 0.01, 0.3);
+  private roll = new OneEuro(0.1, 0.01, 0.3);
+  /** Kurs kontinuierlich (ohne 0°/360°-Sprung) für den Filter */
+  private unwrapped: number | null = null;
+
+  reset(): void {
+    this.heading.reset();
+    this.pitch.reset();
+    this.roll.reset();
+    this.unwrapped = null;
+  }
+
+  update(raw: ViewAngles, timeMs: number): ViewAngles {
+    this.unwrapped = this.unwrapped === null ? raw.heading : this.unwrapped + deltaDeg(raw.heading, this.unwrapped);
+    return {
+      heading: (((this.heading.filter(this.unwrapped, timeMs) % 360) + 360) % 360),
+      pitch: this.pitch.filter(raw.pitch, timeMs),
+      roll: this.roll.filter(raw.roll, timeMs),
+    };
+  }
 }
 
-/** Lineare Mischung zweier Einheitsvektoren, normiert. */
-function blend(prev: Vec3, next: Vec3, k: number): Vec3 {
-  const v: Vec3 = [prev[0] + (next[0] - prev[0]) * k, prev[1] + (next[1] - prev[1]) * k, prev[2] + (next[2] - prev[2]) * k];
-  const n = Math.hypot(v[0], v[1], v[2]) || 1;
-  return [v[0] / n, v[1] / n, v[2] / n];
+/** Rohwert-Streuung der letzten 2 s je Achse (zur Diagnose, welche Achse zittert). */
+class NoiseMeter {
+  private samples: { t: number; h: number; p: number; r: number }[] = [];
+  private unwrapped: number | null = null;
+
+  add(raw: ViewAngles, timeMs: number): void {
+    this.unwrapped = this.unwrapped === null ? raw.heading : this.unwrapped + deltaDeg(raw.heading, this.unwrapped);
+    this.samples.push({ t: timeMs, h: this.unwrapped, p: raw.pitch, r: raw.roll });
+    while (this.samples.length && this.samples[0].t < timeMs - 2000) this.samples.shift();
+  }
+
+  std(): ViewAngles | null {
+    const n = this.samples.length;
+    if (n < 10) return null;
+    const sd = (k: 'h' | 'p' | 'r') => {
+      const m = this.samples.reduce((acc, x) => acc + x[k], 0) / n;
+      return Math.sqrt(this.samples.reduce((acc, x) => acc + (x[k] - m) ** 2, 0) / n);
+    };
+    return { heading: sd('h'), pitch: sd('p'), roll: sd('r') };
+  }
+}
+
+function deltaDeg(a: number, b: number): number {
+  const d = (((a - b) % 360) + 360) % 360;
+  return d > 180 ? d - 360 : d;
 }

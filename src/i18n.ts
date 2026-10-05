@@ -22,6 +22,7 @@ const de = {
   'settings.compute': 'Panorama berechnen',
   'settings.resetOffset': 'Kompass-Korrektur zurücksetzen',
   'settings.install': 'App installieren',
+  'settings.noise': 'Sensorrauschen (Handy ruhig halten): Kurs ±{h}°, Neigung ±{p}°, Rolle ±{r}°',
   'settings.help':
     'Gipfel antippen, Fadenkreuz auf den echten Gipfel richten, „Übernehmen“: korrigiert den Kompass. Ohne Sensor: ziehen zum Drehen, zwei Finger zum Zoomen.',
   'credits.elevation': 'Höhendaten',
@@ -87,6 +88,7 @@ const en: Dict = {
   'settings.compute': 'Compute panorama',
   'settings.resetOffset': 'Reset compass correction',
   'settings.install': 'Install app',
+  'settings.noise': 'Sensor noise (hold phone still): heading ±{h}°, pitch ±{p}°, roll ±{r}°',
   'settings.help':
     'Tap a peak, aim the crosshair at the real peak, then “Apply”: this corrects the compass. Without sensors: drag to turn, pinch to zoom.',
   'credits.elevation': 'Elevation data',
@@ -148,6 +150,7 @@ const fr: Dict = {
   'settings.compute': 'Calculer le panorama',
   'settings.resetOffset': 'Réinitialiser la correction de boussole',
   'settings.install': 'Installer l’app',
+  'settings.noise': 'Bruit des capteurs (tenir immobile) : cap ±{h}°, tangage ±{p}°, roulis ±{r}°',
   'settings.help':
     'Touchez un sommet, visez le vrai sommet avec le réticule, puis « Appliquer » : la boussole est corrigée. Sans capteurs : glisser pour tourner, pincer pour zoomer.',
   'credits.elevation': 'Données d’altitude',
@@ -209,6 +212,7 @@ const it: Dict = {
   'settings.compute': 'Calcola panorama',
   'settings.resetOffset': 'Azzera correzione bussola',
   'settings.install': 'Installa app',
+  'settings.noise': 'Rumore sensori (tieni fermo il telefono): rotta ±{h}°, beccheggio ±{p}°, rollio ±{r}°',
   'settings.help':
     'Tocca una vetta, punta il mirino sulla vetta reale, poi «Applica»: corregge la bussola. Senza sensori: trascina per ruotare, pizzica per zoomare.',
   'credits.elevation': 'Dati altimetrici',

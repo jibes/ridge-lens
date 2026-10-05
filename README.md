@@ -42,7 +42,7 @@ Kompass korrigieren:
 
 Die Korrektur bleibt im Browser gespeichert. Sie enthält auch die magnetische Missweisung (Alpen ≈ +3°), die Handy-Kompasse nicht abziehen.
 
-Technik (`src/orientation.ts`): Rotationsmatrix aus α/β/γ (W3C), Blickachse = −z des Geräts, Rolle relativ zum Horizont, Bildschirmdrehung (Querformat) berücksichtigt. Android: `deviceorientationabsolute`; iOS: relatives α plus `webkitCompassHeading` als geglätteter Nordbezug. Adaptiver, zeitbasierter Tiefpass (Prinzip One-Euro-Filter) auf Richtungsvektoren statt Winkeln: in Ruhe ≈ 0,4 s Zeitkonstante gegen Kompasszittern, bei schnellen Schwenks kaum Verzögerung; kein 0°/360°-Sprung.
+Technik (`src/orientation.ts`): Rotationsmatrix aus α/β/γ (W3C), Blickachse = −z des Geräts, Rolle relativ zum Horizont, Bildschirmdrehung (Querformat) berücksichtigt. Android: `deviceorientationabsolute`; iOS: relatives α plus `webkitCompassHeading` als geglätteter Nordbezug. One-Euro-Filter je Achse (Kurs am trägsten, da Magnetometer am stärksten rauscht): ±2° Rauschen → ±0,2°, Schwenk mit 60°/s nach 0,4 s eingeholt; Kurs ohne 0°/360°-Sprung gefiltert. Einstellungen zeigen das Rohrauschen je Achse (Diagnose).
 
 ## Funktionsweise
 
