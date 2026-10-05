@@ -18,6 +18,10 @@ Zustand steckt in der URL: `#lat,lon,höhe,blickrichtung,sichtfeld`, z. B. `#47.
 
 Beim Öffnen: Bildschirm bleibt an (Screen Wake Lock), Standort per GPS, auf Touch-Geräten zusätzlich Sensormodus (iOS: erst nach Tippen auf „Sensor“). Ohne GPS-Freigabe wird der Ort aus dem Link bzw. Rigi Kulm gezeigt; ohne Sensordaten schaltet der Sensormodus nach 3 s ab und die Statuszeile nennt den Grund (z. B. Brave blockiert Bewegungssensoren).
 
+## Bedienung
+
+Vollbild-Panorama, unten drei Knöpfe: Einstellungen (Ort, Koordinaten, Höhe, Sichtweite, Kompass-Korrektur, Installieren), Sensor an/aus, Standort neu bestimmen. Farben folgen dem Hell-/Dunkelmodus des Systems. Ohne Sensor: ziehen, Pinch/Mausrad, 360°-Übersicht antippen.
+
 ## App installieren
 
 Android (Chrome/Brave): Knopf „Installieren“ oder Browsermenü → „Zum Startbildschirm hinzufügen“. iOS (Safari): Teilen → „Zum Home-Bildschirm“.

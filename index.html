@@ -4,54 +4,80 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Ridge Lens</title>
-    <meta name="theme-color" content="#4f86c6" />
+    <meta name="theme-color" content="#7aa6d6" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#070b12" media="(prefers-color-scheme: dark)" />
+    <meta name="color-scheme" content="light dark" />
     <meta name="description" content="Sichtbare Bergketten und Gipfelnamen aus Standort und Handy-Ausrichtung" />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
-    <header>
-      <form id="form">
-        <label>Ort
-          <select id="preset">
-            <option value="">– eigener –</option>
-          </select>
-        </label>
-        <label>Breite <input id="lat" type="number" step="any" required /></label>
-        <label>Länge <input id="lon" type="number" step="any" required /></label>
-        <label title="Leer = aus Höhenmodell">Höhe m <input id="ele" type="number" step="any" placeholder="auto" /></label>
-        <label>Sichtweite km <input id="radius" type="number" min="10" max="250" step="10" value="100" /></label>
-        <button type="button" id="gps">GPS</button>
-        <button type="button" id="sensor" aria-pressed="false" title="Blick folgt der Ausrichtung des Handys">Sensor</button>
-        <button type="submit">Berechnen</button>
-        <button type="button" id="install" hidden>Installieren</button>
-        <label class="check"><input id="hidden" type="checkbox" /> verdeckte Gipfel</label>
-      </form>
-      <div id="status">Bereit.</div>
-    </header>
-    <main>
-      <div id="stage">
-        <canvas id="view"></canvas>
-        <div id="align" class="bar" hidden>
-          <span id="align-text"></span>
-          <button type="button" id="align-apply">Übernehmen</button>
-          <button type="button" id="align-close" aria-label="Schließen">×</button>
-        </div>
-        <div id="sensor-info" class="bar" hidden>
-          <span id="sensor-text"></span>
-          <button type="button" id="offset-reset">Korrektur zurücksetzen</button>
-        </div>
+    <main id="stage">
+      <canvas id="view" aria-label="Bergpanorama"></canvas>
+      <canvas id="overview" aria-label="360°-Übersicht, antippen zum Drehen"></canvas>
+
+      <div id="status" class="pill" role="status" aria-live="polite">Bereit</div>
+
+      <div id="align" class="toast" hidden>
+        <span id="align-text"></span>
+        <button type="button" id="align-apply" class="primary">Übernehmen</button>
+        <button type="button" id="align-close" class="icon-btn small" aria-label="Schließen">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
       </div>
-      <canvas id="overview" height="56"></canvas>
+
+      <div id="sensor-info" class="readout" hidden><span id="sensor-text"></span></div>
+
+      <nav class="dock" aria-label="Steuerung">
+        <button type="button" id="menu" class="icon-btn" aria-label="Einstellungen" aria-expanded="false" aria-controls="panel">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></svg>
+        </button>
+        <button type="button" id="sensor" class="icon-btn" aria-label="Ausrichtung per Sensor" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 6.5l2.2 5.5L12 17.5 9.8 12z" class="fill" /></svg>
+        </button>
+        <button type="button" id="gps" class="icon-btn" aria-label="Standort neu bestimmen">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.5" class="fill" /><circle cx="12" cy="12" r="7.5" /><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22" /></svg>
+        </button>
+      </nav>
+
+      <section id="panel" class="sheet" hidden aria-label="Einstellungen">
+        <div class="sheet-head">
+          <h2>Einstellungen</h2>
+          <button type="button" id="panel-close" class="icon-btn small" aria-label="Schließen">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+        <form id="form">
+          <label class="wide">Ort
+            <select id="preset">
+              <option value="">Eigener Standort</option>
+            </select>
+          </label>
+          <label>Breite <input id="lat" type="number" step="any" inputmode="decimal" required /></label>
+          <label>Länge <input id="lon" type="number" step="any" inputmode="decimal" required /></label>
+          <label>Höhe (m) <input id="ele" type="number" step="any" inputmode="numeric" placeholder="auto" /></label>
+          <label>Sichtweite (km) <input id="radius" type="number" min="10" max="250" step="10" inputmode="numeric" value="100" /></label>
+          <label class="check wide"><input id="hidden" type="checkbox" /> Verdeckte Gipfel zeigen</label>
+          <button type="submit" class="primary wide">Panorama berechnen</button>
+        </form>
+        <div class="row">
+          <button type="button" id="offset-reset">Kompass-Korrektur zurücksetzen</button>
+          <button type="button" id="install" hidden>App installieren</button>
+        </div>
+        <p class="help">
+          Gipfel antippen, Fadenkreuz auf den echten Gipfel richten, „Übernehmen“: korrigiert den Kompass.
+          Ohne Sensor: ziehen zum Drehen, zwei Finger zum Zoomen.
+        </p>
+        <p class="credits">
+          Höhendaten: <a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md" target="_blank" rel="noopener">AWS Terrain Tiles</a> ·
+          Gipfel: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>-Mitwirkende
+        </p>
+      </section>
     </main>
-    <footer>
-      Ziehen = drehen/neigen (Sensor: Kompass korrigieren) · Label antippen = Gipfel wählen · Mausrad/Pinch = Zoom ·
-      Höhendaten: <a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md" target="_blank" rel="noopener">AWS Terrain Tiles</a> ·
-      Gipfel: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>-Mitwirkende
-    </footer>
     <script type="module" src="./src/main.ts"></script>
   </body>
 </html>

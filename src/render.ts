@@ -5,20 +5,78 @@ import type { PanoramaResult, Peak } from './protocol';
 const COMPASS = ['N', 'NO', 'O', 'SO', 'S', 'SW', 'W', 'NW'];
 const DIST_CLASSES = 10;
 const RAD = Math.PI / 180;
+const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
 
-/** Farbe nach Distanz: nah dunkel/warm, fern hell/blau (Luftperspektive). */
-function distColor(t: number, alpha = 1): string {
-  const near = [62, 52, 40];
-  const far = [150, 175, 205];
-  const c = near.map((n, i) => Math.round(n + (far[i] - n) * t));
-  return `rgba(${c[0]},${c[1]},${c[2]},${alpha})`;
+type RGB = [number, number, number];
+
+/** Farben der Zeichnung; hell/dunkel nach Systemeinstellung. */
+export interface Palette {
+  skyTop: string;
+  skyBottom: string;
+  groundTop: string;
+  groundBottom: string;
+  /** Kammlinien: nah → fern (Luftperspektive). */
+  lineNear: RGB;
+  lineFar: RGB;
+  scale: string;
+  text: string;
+  textMuted: string;
+  halo: string;
+  leader: string;
+  accent: string;
+  hidden: string;
+  overviewBg: string;
+  overviewFill: string;
+}
+
+export const LIGHT: Palette = {
+  skyTop: '#7aa6d6',
+  skyBottom: '#e6eef6',
+  groundTop: '#c3ccd5',
+  groundBottom: '#959c95',
+  lineNear: [58, 52, 46],
+  lineFar: [140, 165, 192],
+  scale: 'rgba(22,30,42,0.7)',
+  text: '#121821',
+  textMuted: 'rgba(18,24,33,0.62)',
+  halo: 'rgba(255,255,255,0.82)',
+  leader: 'rgba(18,24,33,0.45)',
+  accent: '#d0402f',
+  hidden: 'rgba(18,24,33,0.35)',
+  overviewBg: 'rgba(230,238,246,0.85)',
+  overviewFill: 'rgba(120,134,150,0.85)',
+};
+
+export const DARK: Palette = {
+  skyTop: '#070b12',
+  skyBottom: '#26364c',
+  groundTop: '#141b24',
+  groundBottom: '#0b0f14',
+  lineNear: [214, 222, 232],
+  lineFar: [70, 92, 120],
+  scale: 'rgba(220,228,238,0.6)',
+  text: '#edf2f7',
+  textMuted: 'rgba(237,242,247,0.6)',
+  halo: 'rgba(7,11,18,0.85)',
+  leader: 'rgba(237,242,247,0.35)',
+  accent: '#ff6b57',
+  hidden: 'rgba(237,242,247,0.3)',
+  overviewBg: 'rgba(16,22,32,0.85)',
+  overviewFill: 'rgba(90,110,135,0.9)',
+};
+
+function mix(a: RGB, b: RGB, t: number): string {
+  return `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * t)).join(',')})`;
 }
 
 export interface RenderOptions {
+  palette: Palette;
   showHidden: boolean;
   /** Fadenkreuz in Bildmitte (Sensormodus). */
   crosshair: boolean;
   selectedPeakId: number | null;
+  /** Freizuhaltender Bereich oben (px), z. B. für die Statuszeile. */
+  topInset: number;
 }
 
 export interface PlacedLabel {
@@ -36,20 +94,22 @@ export function renderView(
   opts: RenderOptions,
 ): PlacedLabel[] {
   const { width: W, height: H } = cam;
+  const pal = opts.palette;
   const sky = ctx.createLinearGradient(0, 0, 0, H);
-  sky.addColorStop(0, '#6f9fd8');
-  sky.addColorStop(1, '#dfe9f3');
+  sky.addColorStop(0, pal.skyTop);
+  sky.addColorStop(1, pal.skyBottom);
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, W, H);
 
   const proj = projector(cam);
   if (pano) {
-    drawGround(ctx, cam, pano, proj);
-    drawLines(ctx, cam, pano, proj);
+    drawGround(ctx, cam, pano, proj, pal);
+    drawLines(ctx, cam, pano, proj, pal);
   }
-  drawCompass(ctx, cam, proj);
-  const placed = pano ? drawPeaks(ctx, cam, pano, opts, proj) : [];
-  if (opts.crosshair) drawCrosshair(ctx, cam);
+  const scaleY = opts.topInset + 14;
+  drawCompass(ctx, cam, proj, pal, scaleY);
+  const placed = pano ? drawPeaks(ctx, cam, pano, opts, proj, scaleY + 26) : [];
+  if (opts.crosshair) drawCrosshair(ctx, cam, pal);
   return placed;
 }
 
@@ -63,7 +123,7 @@ function visibleBins(cam: Camera, pano: PanoramaResult): number[] {
   return out;
 }
 
-function drawGround(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaResult, proj: Project) {
+function drawGround(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaResult, proj: Project, pal: Palette) {
   const line: [number, number][] = [];
   for (const i of visibleBins(cam, pano)) {
     const p = proj(i * pano.azStep, pano.horizon[i]);
@@ -82,13 +142,13 @@ function drawGround(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaRe
   ctx.lineTo(last[0] + dx, last[1] + dy);
   ctx.closePath();
   const g = ctx.createLinearGradient(0, 0, 0, cam.height);
-  g.addColorStop(0, '#b9c4cf');
-  g.addColorStop(1, '#8b8f86');
+  g.addColorStop(0, pal.groundTop);
+  g.addColorStop(1, pal.groundBottom);
   ctx.fillStyle = g;
   ctx.fill();
 }
 
-function drawLines(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaResult, proj: Project) {
+function drawLines(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaResult, proj: Project, pal: Palette) {
   const { linePoints: pts, lineOffsets: off } = pano;
   const radius = pano.request.radius;
   // Nach Distanzklassen bündeln: ein Pfad je Klasse, fern zuerst
@@ -118,44 +178,45 @@ function drawLines(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaRes
   ctx.lineCap = 'round';
   for (let c = DIST_CLASSES - 1; c >= 0; c--) {
     const t = (c + 0.5) / DIST_CLASSES;
-    ctx.strokeStyle = distColor(t);
-    ctx.lineWidth = 2.2 - 1.4 * t;
+    ctx.strokeStyle = mix(pal.lineNear, pal.lineFar, t);
+    ctx.lineWidth = 2 - 1.3 * t;
     ctx.stroke(paths[c]);
   }
 }
 
-function drawCompass(ctx: CanvasRenderingContext2D, cam: Camera, proj: Project) {
-  // Schrittweite so, dass Beschriftungen mindestens ~48 px auseinanderliegen
+/**
+ * Gradskala als gerade Zeile auf Bildschirmhöhe `y`. x-Position aus der Projektion
+ * auf Höhe der Blickachse (gerade Linie ohne Rolle; bei Rolle Näherung).
+ */
+function drawCompass(ctx: CanvasRenderingContext2D, cam: Camera, proj: Project, pal: Palette, y: number) {
+  // Schrittweite so, dass Beschriftungen mindestens ~52 px auseinanderliegen
   const pxPerDeg = cam.width / cam.hfov;
-  const step = [1, 2, 5, 10, 15, 30, 45].find((s) => s * pxPerDeg >= 48) ?? 45;
-  // Skala knapp unter dem oberen Bildrand, entlang konstanter Höhe
-  const vhalf = Math.atan((Math.tan((cam.hfov / 2) * RAD) * cam.height) / cam.width) / RAD;
-  const el = cam.pitch + vhalf * 0.93;
-  ctx.font = '12px system-ui, sans-serif';
+  const step = [1, 2, 5, 10, 15, 30, 45].find((s) => s * pxPerDeg >= 52) ?? 45;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
-  ctx.fillStyle = 'rgba(20,30,45,0.8)';
+  ctx.fillStyle = pal.scale;
   for (let a = 0; a < 360; a += step) {
     if (!azimuthInView(cam, a, 1)) continue;
-    const p = proj(a, el);
-    if (!p) continue;
+    const p = proj(a, cam.pitch);
+    if (!p || p[0] < 12 || p[0] > cam.width - 12) continue;
     const major = a % 45 === 0;
-    ctx.fillRect(p[0] - 0.5, p[1] - (major ? 12 : 6), 1, major ? 12 : 6);
-    ctx.fillText(major ? COMPASS[a / 45] : `${a}°`, p[0], p[1] + 2);
+    ctx.font = `${major ? 600 : 400} 11px ${FONT}`;
+    ctx.fillRect(p[0] - 0.5, y - (major ? 8 : 5), 1, major ? 8 : 5);
+    ctx.fillText(major ? COMPASS[a / 45] : `${a}°`, p[0], y + 3);
   }
 }
 
-function drawCrosshair(ctx: CanvasRenderingContext2D, cam: Camera) {
+function drawCrosshair(ctx: CanvasRenderingContext2D, cam: Camera, pal: Palette) {
   const x = cam.width / 2;
   const y = cam.height / 2;
   ctx.save();
-  ctx.strokeStyle = 'rgba(192,57,43,0.9)';
+  ctx.strokeStyle = pal.accent;
   ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.arc(x, y, 14, 0, Math.PI * 2);
+  ctx.arc(x, y, 12, 0, Math.PI * 2);
   for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-    ctx.moveTo(x + dx * 6, y + dy * 6);
-    ctx.lineTo(x + dx * 24, y + dy * 24);
+    ctx.moveTo(x + dx * 17, y + dy * 17);
+    ctx.lineTo(x + dx * 26, y + dy * 26);
   }
   ctx.stroke();
   ctx.restore();
@@ -167,59 +228,71 @@ function drawPeaks(
   pano: PanoramaResult,
   opts: RenderOptions,
   proj: Project,
+  labelTop: number,
 ): PlacedLabel[] {
+  const pal = opts.palette;
   const cands: PlacedLabel[] = [];
   for (const peak of pano.peaks) {
     const selected = peak.id === opts.selectedPeakId;
     if (!peak.visible && !opts.showHidden && !selected) continue;
     if (!azimuthInView(cam, peak.az, 1)) continue;
     const p = proj(peak.az, peak.angle);
-    if (!p || p[0] < -20 || p[0] > cam.width + 20 || p[1] < 0 || p[1] > cam.height) continue;
+    if (!p || p[0] < -20 || p[0] > cam.width + 20 || p[1] < labelTop || p[1] > cam.height) continue;
     cands.push({ peak, x: p[0], y: p[1] });
   }
   // Priorität: ausgewählt, sichtbar vor verdeckt, dann Höhe
   const rank = (l: PlacedLabel) => (l.peak.id === opts.selectedPeakId ? 2 : l.peak.visible ? 1 : 0);
   cands.sort((a, b) => rank(b) - rank(a) || b.peak.ele - a.peak.ele);
   const placed: PlacedLabel[] = [];
-  const minGap = 15;
+  const minGap = 18;
   for (const c of cands) {
     if (placed.every((p) => Math.abs(p.x - c.x) >= minGap)) placed.push(c);
   }
 
-  const labelTop = 54;
-  ctx.font = '13px system-ui, sans-serif';
+  const nameFont = `600 13px ${FONT}`;
+  const metaFont = `400 11px ${FONT}`;
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
   for (const { peak, x, y } of placed) {
     const selected = peak.id === opts.selectedPeakId;
-    const text = `${peak.name}  ${Math.round(peak.ele)} m · ${(peak.dist / 1000).toFixed(peak.dist < 10_000 ? 1 : 0)} km`;
-    // Text oben bündig; Leitlinie vom Gipfel bis zum Textende
-    const top = Math.max(labelTop + 10, Math.min(y - 12, labelTop + ctx.measureText(text).width + 4));
-    ctx.strokeStyle = selected ? '#c0392b' : peak.visible ? 'rgba(20,25,35,0.7)' : 'rgba(20,25,35,0.25)';
-    ctx.lineWidth = selected ? 2 : 1;
+    const name = peak.name;
+    const meta = `${Math.round(peak.ele)} m · ${(peak.dist / 1000).toFixed(peak.dist < 10_000 ? 1 : 0)} km`;
+    ctx.font = nameFont;
+    const wName = ctx.measureText(name).width;
+    ctx.font = metaFont;
+    const wMeta = ctx.measureText(meta).width;
+    const len = wName + 6 + wMeta;
+    // Text oben bündig (liest von unten nach oben); Leitlinie vom Gipfel bis zum Textende
+    const top = Math.max(labelTop + 10, Math.min(y - 10, labelTop + len + 4));
+    ctx.strokeStyle = selected ? pal.accent : peak.visible ? pal.leader : pal.hidden;
+    ctx.lineWidth = selected ? 1.5 : 1;
     ctx.beginPath();
-    ctx.moveTo(x + 0.5, y - 3);
+    ctx.moveTo(x + 0.5, y - 4);
     ctx.lineTo(x + 0.5, top);
     ctx.stroke();
-    ctx.fillStyle = peak.visible || selected ? '#c0392b' : 'rgba(80,80,80,0.5)';
+    ctx.fillStyle = peak.visible || selected ? pal.accent : pal.hidden;
     ctx.beginPath();
-    ctx.arc(x, y, selected ? 5 : 3, 0, Math.PI * 2);
+    ctx.arc(x, y, selected ? 4.5 : 3, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.save();
     ctx.translate(x, top - 4);
     ctx.rotate(-Math.PI / 2);
-    ctx.font = selected ? 'bold 13px system-ui, sans-serif' : '13px system-ui, sans-serif';
+    ctx.lineJoin = 'round';
     ctx.lineWidth = 3;
-    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-    ctx.strokeText(text, 0, 0);
-    ctx.fillStyle = selected ? '#a5281b' : peak.visible ? '#141a24' : 'rgba(20,26,36,0.45)';
-    ctx.fillText(text, 0, 0);
+    ctx.strokeStyle = pal.halo;
+    ctx.font = nameFont;
+    ctx.strokeText(name, 0, 0);
+    ctx.fillStyle = selected ? pal.accent : peak.visible ? pal.text : pal.hidden;
+    ctx.fillText(name, 0, 0);
+    ctx.font = metaFont;
+    ctx.strokeText(meta, wName + 6, 0.5);
+    ctx.fillStyle = peak.visible || selected ? pal.textMuted : pal.hidden;
+    ctx.fillText(meta, wName + 6, 0.5);
     ctx.restore();
   }
   return placed;
 }
-
 
 /** 360°-Übersichtsstreifen (äquirektangulär) mit Markierung des Sichtfelds. */
 export function renderOverview(
@@ -228,8 +301,10 @@ export function renderOverview(
   H: number,
   cam: Camera,
   pano: PanoramaResult | null,
+  pal: Palette,
 ) {
-  ctx.fillStyle = '#dfe9f3';
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = pal.overviewBg;
   ctx.fillRect(0, 0, W, H);
   if (pano) {
     const n = pano.horizon.length;
@@ -248,21 +323,20 @@ export function renderOverview(
     for (let i = 0; i < n; i++) ctx.lineTo((i / n) * W, y(pano.horizon[i]));
     ctx.lineTo(W, H);
     ctx.closePath();
-    ctx.fillStyle = '#8f9aa5';
+    ctx.fillStyle = pal.overviewFill;
     ctx.fill();
   }
   // Sichtfeld
   const x0 = (normalizeDeg(cam.heading - cam.hfov / 2) / 360) * W;
   const w = (cam.hfov / 360) * W;
-  ctx.fillStyle = 'rgba(192,57,43,0.18)';
-  ctx.strokeStyle = 'rgba(192,57,43,0.9)';
+  ctx.strokeStyle = pal.accent;
+  ctx.lineWidth = 1.5;
   for (const off of [0, -W]) {
-    ctx.fillRect(x0 + off, 0, w, H);
-    ctx.strokeRect(x0 + off + 0.5, 0.5, w - 1, H - 1);
+    ctx.strokeRect(x0 + off + 0.75, 0.75, w - 1.5, H - 1.5);
   }
-  ctx.fillStyle = 'rgba(20,30,45,0.8)';
-  ctx.font = '11px system-ui, sans-serif';
+  ctx.fillStyle = pal.scale;
+  ctx.font = `600 10px ${FONT}`;
   ctx.textBaseline = 'top';
   ctx.textAlign = 'center';
-  for (let k = 0; k < 8; k++) ctx.fillText(COMPASS[k], ((k * 45) / 360) * W + (k === 0 ? 8 : 0), 2);
+  for (let k = 0; k < 8; k++) ctx.fillText(COMPASS[k], ((k * 45) / 360) * W + (k === 0 ? 8 : 0), 3);
 }

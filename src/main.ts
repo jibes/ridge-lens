@@ -2,7 +2,7 @@ import { deltaDeg, normalizeDeg } from './geo';
 import { OrientationTracker } from './orientation';
 import type { Camera } from './projection';
 import type { ComputeRequest, PanoramaResult, Peak, WorkerMessage } from './protocol';
-import { renderOverview, renderView, type PlacedLabel } from './render';
+import { DARK, LIGHT, renderOverview, renderView, type PlacedLabel } from './render';
 
 interface Preset {
   name: string;
@@ -37,6 +37,8 @@ const notices = new Map<string, string>();
 function setStatus(text: string) {
   baseStatus = text;
   statusEl.textContent = [baseStatus, ...notices.values()].filter(Boolean).join(' · ');
+  // Hinweise dürfen umbrechen, normale Statusmeldungen bleiben einzeilig
+  statusEl.classList.toggle('wrap', notices.size > 0);
 }
 function setNotice(key: string, text: string | null) {
   if (text) notices.set(key, text);
@@ -123,16 +125,24 @@ function render() {
   frame = 0;
   syncSensor();
   const dpr = devicePixelRatio || 1;
+  const palette = darkScheme.matches ? DARK : LIGHT;
   viewCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   labels = renderView(viewCtx, cam, pano, {
+    palette,
     showHidden: hiddenIn.checked,
     crosshair: sensorOn,
     selectedPeakId: selected?.id ?? null,
+    // Skala und Labels unterhalb der Statuszeile beginnen
+    topInset: statusEl.getBoundingClientRect().bottom - view.getBoundingClientRect().top,
   });
-  const ow = overview.clientWidth;
-  overCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  renderOverview(overCtx, ow, overview.clientHeight, cam, pano);
+  if (overview.clientWidth) {
+    overCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    renderOverview(overCtx, overview.clientWidth, overview.clientHeight, cam, pano, palette);
+  }
 }
+
+const darkScheme = matchMedia('(prefers-color-scheme: dark)');
+darkScheme.addEventListener('change', requestRender);
 
 function resize() {
   const dpr = devicePixelRatio || 1;
@@ -144,7 +154,9 @@ function resize() {
   overview.height = Math.round(overview.clientHeight * dpr);
   requestRender();
 }
-new ResizeObserver(resize).observe(view);
+const resizeObserver = new ResizeObserver(resize);
+resizeObserver.observe(view);
+resizeObserver.observe(overview);
 
 // --- Berechnung -------------------------------------------------------------------
 
@@ -164,10 +176,11 @@ worker.onmessage = (ev: MessageEvent<WorkerMessage>) => {
   selected = null;
   updateAlignBar();
   const visible = pano.peaks.filter((p) => p.visible).length;
-  setStatus(`Augenhöhe ${Math.round(pano.h0)} m (DEM ${Math.round(pano.demElevation)} m) · ` +
-    `${visible}/${pano.peaks.length} Gipfel sichtbar · ${(pano.millis / 1000).toFixed(1)} s` +
-    (pano.failedTiles ? ` · ${pano.failedTiles} Höhenkacheln fehlen` : '') +
-    (pano.peakError ? ` · ${pano.peakError}` : ''));
+  setStatus(
+    `${Math.round(pano.h0)} m ü. M. · ${visible} Gipfel sichtbar` +
+      (pano.failedTiles ? ` · ${pano.failedTiles} Höhenkacheln fehlen` : '') +
+      (pano.peakError ? ` · ${pano.peakError}` : ''),
+  );
   requestRender();
 };
 
@@ -192,14 +205,30 @@ function compute() {
   worker.postMessage(req);
 }
 
+// --- Einstellungsblatt -----------------------------------------------------------
+
+const panel = $<HTMLElement>('panel');
+const menuBtn = $<HTMLButtonElement>('menu');
+function setPanel(open: boolean) {
+  panel.hidden = !open;
+  menuBtn.setAttribute('aria-expanded', String(open));
+}
+menuBtn.addEventListener('click', () => setPanel(panel.hidden !== false));
+$<HTMLButtonElement>('panel-close').addEventListener('click', () => setPanel(false));
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') setPanel(false);
+});
+
 form.addEventListener('submit', (e) => {
   e.preventDefault();
+  setPanel(false);
   compute();
 });
 presetSel.addEventListener('change', () => {
   const p = PRESETS[Number(presetSel.value)];
   if (presetSel.value && p) {
     applyPreset(p);
+    setPanel(false);
     compute();
   }
 });
@@ -392,6 +421,8 @@ $<HTMLButtonElement>('align-close').addEventListener('click', () => {
 
 // --- Sensormodus -------------------------------------------------------------------
 
+const COMPASS_16 = ['N', 'NNO', 'NO', 'ONO', 'O', 'OSO', 'SO', 'SSO', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+
 function fmtSigned(v: number, digits = 1): string {
   return `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(digits)}`;
 }
@@ -406,10 +437,12 @@ function syncSensor() {
   cam.heading = normalizeDeg(a.heading + offset.heading);
   cam.pitch = a.pitch + offset.pitch;
   cam.roll = a.roll;
+  const dir = COMPASS_16[Math.round(cam.heading / 22.5) % 16];
+  const corrected = Math.abs(offset.heading) >= 0.05 || Math.abs(offset.pitch) >= 0.05;
   sensorText.textContent =
-    `Kurs ${cam.heading.toFixed(1)}° · Neigung ${cam.pitch.toFixed(1)}° · Rolle ${cam.roll.toFixed(0)}° · ` +
-    `Korrektur ${fmtSigned(offset.heading)}° / ${fmtSigned(offset.pitch)}°` +
-    (tracker.status === 'relative' ? ' · kein Kompass, per Gipfel ausrichten' : '');
+    `${dir} ${cam.heading.toFixed(0)}°` +
+    (corrected ? ` · korrigiert ${fmtSigned(offset.heading)}°` : '') +
+    (tracker.status === 'relative' ? ' · kein Kompass – Gipfel antippen zum Ausrichten' : '');
 }
 
 let sensorTimeout = 0;
