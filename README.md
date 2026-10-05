@@ -77,4 +77,4 @@ Höhendaten: AWS Terrain Tiles ([Quellen](https://github.com/tilezen/joerd/blob/
 
 ## Lizenz
 
-Quellcode: [MIT](LICENSE). Daten: siehe oben, nicht MIT.
+© 2026 jibes. Quellcode: [GNU GPL 3.0 oder später](LICENSE) – Weitergaben und veränderte Fassungen müssen samt Quellcode unter derselben Lizenz bleiben. Daten fallen nicht darunter: Gipfel ODbL (OpenStreetMap), Höhendaten siehe Quellen.
