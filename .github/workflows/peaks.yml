@@ -34,6 +34,8 @@ jobs:
     env:
       # Objektarten aus der Weltdatei (osmium tags-filter); Änderung löst neuen Auszug aus
       PEAKS_OSM_FILTER: n/natural=peak,volcano
+      # Verarbeitung des Auszugs geändert (z. B. Doppeleinträge zusammenführen): hochzählen
+      PEAKS_EXTRACT_REV: '2'
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -52,10 +54,11 @@ jobs:
           osm=$(jq -r '.osm // empty' public/peaks/meta.json 2>/dev/null || true)
           # Geänderter Filter (z. B. neue Objektart) verlangt einen neuen Auszug
           filter=$(jq -r '.filter // empty' public/peaks/meta.json 2>/dev/null || true)
+          rev=$(jq -r '.rev // empty' public/peaks/meta.json 2>/dev/null || true)
           age=999
           [ -n "$osm" ] && age=$(( ($(date +%s) - $(date -d "$osm" +%s)) / 86400 ))
           echo "Datensatz: ${cov:-regional}, OSM-Stand ${osm:-keiner} (${age} Tage), Filter ${filter:-unbekannt}"
-          if [ "$cov" != global ] || [ "$age" -ge 30 ] || [ "$filter" != "$PEAKS_OSM_FILTER" ] || [ "${{ inputs.osm }}" = true ]; then
+          if [ "$cov" != global ] || [ "$age" -ge 30 ] || [ "$filter" != "$PEAKS_OSM_FILTER" ] || [ "$rev" != "$PEAKS_EXTRACT_REV" ] || [ "${{ inputs.osm }}" = true ]; then
             echo refresh=true >> "$GITHUB_OUTPUT"
           fi
       - name: Extract peaks from OSM planet

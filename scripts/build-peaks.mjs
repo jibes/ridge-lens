@@ -7,7 +7,7 @@
 // Kachel:     [[id, lat, lon, ele|null, name, de, en, fr, it, fame, qid?], …] (leere Namen = "")
 //             fame = Zahl der Wikidata-Sitelinks (1 = Verweis, noch unbekannt; 0 = kein Verweis)
 // index.json: { generated, coverage: "global", osm, tiles: ["46_8", …] } (Kacheln ohne Gipfel fehlen)
-// meta.json:  { osm: Zeitpunkt des Auszugs, filter: osmium-Filter des Auszugs }
+// meta.json:  { osm: Zeitpunkt des Auszugs, filter: osmium-Filter, rev: Verarbeitungsstand des Auszugs }
 // fame.json:  { Q1374: 75, … } (nur für den Build, wird nicht veröffentlicht)
 import { createReadStream } from 'node:fs';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
@@ -54,7 +54,7 @@ export async function readExtract(path) {
     const t = f.properties ?? {};
     if (!id || !Number.isFinite(lat) || !Number.isFinite(lon) || !t.name || rows.has(id)) continue;
     const qid = /^Q\d+$/.test(t.wikidata ?? '') ? t.wikidata : '';
-    rows.set(id, { id, lat, lon, ele: parseEle(t.ele), name: t.name, names: LANGS.map((l) => t[`name:${l}`] ?? ''), qid });
+    rows.set(id, { id, lat, lon, ele: parseEle(t.ele), name: t.name, names: LANGS.map((l) => t[`name:${l}`] ?? ''), qid, kind: t.natural ?? '' });
   }
   return [...rows.values()];
 }
@@ -100,6 +100,51 @@ async function sitelinkCounts(ids, onBatch) {
   }
 }
 
+const R = Math.PI / 180;
+const metres = (a, b) => Math.hypot((a.lat - b.lat) * 111_195, (a.lon - b.lon) * 111_195 * Math.cos(a.lat * R));
+const fold = (s) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().trim();
+
+/**
+ * Doppeleinträge zusammenführen: Vulkan und Gipfel bzw. gleichnamige Einträge unter 300 m
+ * (z. B. Kibo/Uhuru Peak). Es bleibt der bekanntere (Gleichstand: der Gipfelpunkt, er
+ * markiert die höchste Stelle); fehlende Höhe, Namen und Wikidata kommen vom anderen.
+ * Verschiedene Gipfel gleicher Art mit eigenem Namen bleiben getrennt (Nebengipfel).
+ */
+export function mergeDuplicates(rows, fameOf) {
+  const cell = (lat, lon) => `${Math.floor(lat / 0.005)}_${Math.floor(lon / 0.005)}`;
+  const grid = new Map();
+  for (const r of rows) {
+    const k = cell(r.lat, r.lon);
+    if (!grid.has(k)) grid.set(k, []);
+    grid.get(k).push(r);
+  }
+  const gone = new Set();
+  let merged = 0;
+  const rank = (r) => fameOf(r) * 10 + (r.kind === 'peak' ? 1 : 0);
+  for (const a of rows) {
+    if (gone.has(a.id)) continue;
+    const ci = Math.floor(a.lat / 0.005);
+    const cj = Math.floor(a.lon / 0.005);
+    for (let di = -1; di <= 1; di++) {
+      for (let dj = -1; dj <= 1; dj++) {
+        for (const b of grid.get(`${ci + di}_${cj + dj}`) ?? []) {
+          if (b === a || gone.has(b.id) || gone.has(a.id)) continue;
+          const sameThing = a.kind !== b.kind || fold(a.name) === fold(b.name);
+          if (!sameThing || metres(a, b) > 300) continue;
+          const [keep, drop] = rank(a) >= rank(b) ? [a, b] : [b, a];
+          if (keep.ele === null) keep.ele = drop.ele;
+          // Übersetzungen nur vom gleichnamigen Eintrag (sonst hieße Kibo auf Englisch "Uhuru Peak")
+          if (fold(keep.name) === fold(drop.name)) keep.names = keep.names.map((n, i) => n || drop.names[i]);
+          if (!keep.qid) keep.qid = drop.qid;
+          gone.add(drop.id);
+          merged++;
+        }
+      }
+    }
+  }
+  return { rows: rows.filter((r) => !gone.has(r.id)), merged };
+}
+
 /** Bisherige Gipfel aus den Kacheln (für Läufe ohne neue OSM-Abfrage). */
 async function rowsFromTiles() {
   const rows = [];
@@ -127,6 +172,7 @@ if (extract) {
   }
   meta.osm = new Date().toISOString();
   meta.filter = process.env.PEAKS_OSM_FILTER ?? '';
+  meta.rev = process.env.PEAKS_EXTRACT_REV ?? '';
 } else if (index?.coverage === 'global') {
   rows = await rowsFromTiles();
   console.log(`OSM-Stand vom ${meta.osm}, ${rows.length} Gipfel aus den Kacheln`);
@@ -147,6 +193,14 @@ await sitelinkCounts(missing, async (batch) => {
   await writeFile(new URL('fame.json', OUT), JSON.stringify(fame));
 });
 console.log(`  wikidata: ${resolved}/${missing.length} ergänzt`);
+
+// Doppeleinträge nur beim frischen Auszug (die Kacheln sind danach schon bereinigt)
+if (extract) {
+  const fameOf = (r) => (r.qid ? (fame[r.qid] ?? 1) : 0);
+  const res = mergeDuplicates(rows, fameOf);
+  rows = res.rows;
+  console.log(`${res.merged} Doppeleinträge (< 300 m) zusammengeführt`);
+}
 
 // Kacheln schreiben (nur geänderte), verwaiste entfernen
 const tiles = new Map();
