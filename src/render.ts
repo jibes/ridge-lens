@@ -263,7 +263,7 @@ function drawSky(
       ctx.fill();
       ctx.lineWidth = 3;
       ctx.strokeStyle = pal.halo;
-      const label = minute ? `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}` : String(d.getHours());
+      const label = minute ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : String(d.getHours());
       ctx.strokeText(label, q[0], q[1] - 5);
       ctx.fillText(label, q[0], q[1] - 5);
     }

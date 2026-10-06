@@ -838,7 +838,7 @@ function skyDetails(key: string): string {
   if (key.startsWith('sat:')) {
     const p = satPass(key);
     if (!p) return t('sat.noPass');
-    return t('sat.pass', { from: fmtTime(p.rise), to: fmtTime(p.set), max: Math.round(p.maxAlt), vis: t(p.visible ? 'sat.visible' : 'sat.notVisible') });
+    return t('sat.pass', { from: fmtWhen(p.rise), to: fmtTime(p.set), max: Math.round(p.maxAlt), vis: t(p.visible ? 'sat.visible' : 'sat.notVisible') });
   }
   const o = night?.objects.find((x) => x.key === key);
   const p = pano;
@@ -922,6 +922,12 @@ function satPass(key: string): SatPass | null {
 
 function fmtTime(t: number | null): string {
   return t === null ? '–' : new Date(t).toLocaleTimeString(lang(), { hour: '2-digit', minute: '2-digit' });
+}
+
+/** Uhrzeit, an einem anderen Tag mit Wochentag („Mi 09:30“). */
+function fmtWhen(t: number): string {
+  const same = new Date(t).toDateString() === new Date(skyTime ?? Date.now()).toDateString();
+  return same ? fmtTime(t) : `${new Date(t).toLocaleDateString(lang(), { weekday: 'short' })} ${fmtTime(t)}`;
 }
 
 function showSkyInfo() {
@@ -1031,6 +1037,23 @@ function skyItems(): SkyItem[] {
   return out;
 }
 
+/** Zusatz im Ziel-Chip für einen noch nicht sichtbaren Himmelskörper: wann er über dem Gelände auftaucht. */
+function riseNote(key: string): string {
+  const o = skyItems().find((x) => x.key === key);
+  if (!o || aboveTerrainNow(o.az, o.alt)) return '';
+  const now = skyTime ?? Date.now();
+  let rise: number | null = null;
+  if (o.kind === 'sat') {
+    rise = satPass(key)?.path.find((q) => aboveTerrainNow(q.az, q.alt))?.t ?? null;
+  } else if (key !== 'sun' && key !== 'moon') {
+    rise = objectTrack(key).find((q) => q.t > now && aboveTerrainNow(q.az, q.alt))?.t ?? null;
+  } else {
+    rise = skyEvents?.[key as 'sun' | 'moon'].rise ?? null;
+    if (rise !== null && rise < now) rise = null;
+  }
+  return ` (${rise !== null ? t('sky.riseAt', { time: fmtWhen(rise) }) : t('search.below')})`;
+}
+
 /** Ziel der Suche als Name und Richtung (Gipfel oder Himmelskörper). */
 function targetPoint(): { name: string; az: number; angle: number } | null {
   if (targetId !== null) {
@@ -1039,9 +1062,10 @@ function targetPoint(): { name: string; az: number; angle: number } | null {
   }
   if (targetSky !== null) {
     const o = skyItems().find((x) => x.key === targetSky);
-    if (o?.kind === 'sat' && o.alt <= 0) {
-      // Noch unter dem Horizont: dorthin, wo er beim nächsten Überflug aufgeht
-      const rise = satPass(o.key)?.path[0];
+    if (o?.kind === 'sat' && !aboveTerrainNow(o.az, o.alt)) {
+      // Noch nicht zu sehen: dorthin, wo er beim nächsten Überflug über dem Gelände auftaucht
+      const path = satPass(o.key)?.path ?? [];
+      const rise = path.find((q) => aboveTerrainNow(q.az, q.alt)) ?? path[0];
       return rise ? { name: o.name, az: rise.az, angle: rise.alt } : null;
     }
     return o ? { name: o.name, az: o.az, angle: o.alt } : null;
@@ -1132,7 +1156,7 @@ function syncTarget() {
   targetChip.hidden = !p;
   if (!p) return;
   // Himmelskörper unter dem Gelände: Richtung zeigen, aber dazusagen
-  const name = targetSky !== null && !aboveTerrainNow(p.az, p.angle) ? `${p.name} (${t('search.below')})` : p.name;
+  const name = targetSky !== null ? `${p.name}${riseNote(targetSky)}` : p.name;
   const turn = turnToTarget(cam, p.az);
   const vfov = (cam.hfov * cam.height) / cam.width;
   const dp = p.angle - cam.pitch;
