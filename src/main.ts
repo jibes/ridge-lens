@@ -433,7 +433,14 @@ for (const [el, key] of [
   } catch {
     /* kein Speicher */
   }
+  const btn = $<HTMLButtonElement>(el === showTerrainIn ? 'layer-terrain' : 'layer-sky');
+  btn.setAttribute('aria-pressed', String(el.checked));
+  btn.addEventListener('click', () => {
+    el.checked = !el.checked;
+    el.dispatchEvent(new Event('change'));
+  });
   el.addEventListener('change', () => {
+    btn.setAttribute('aria-pressed', String(el.checked));
     try {
       localStorage.setItem(key, el.checked ? 'on' : 'off');
     } catch {
