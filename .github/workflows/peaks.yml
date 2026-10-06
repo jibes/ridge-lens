@@ -57,7 +57,8 @@ jobs:
         if: steps.osm.outputs.refresh == 'true'
         shell: bash
         run: |
-          sudo apt-get install -y -qq osmium-tool >/dev/null
+          sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool >/dev/null
+          osmium --version | head -1
           # Erste erreichbare Quelle der Weltdatei (OSM-Spiegel bei AWS, Uni-Spiegel, OSMF)
           url=
           for u in \
