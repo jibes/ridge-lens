@@ -81,6 +81,8 @@ export interface Skyline {
   y: Float32Array;
   /** Trennschärfe je Spalte (0 = keine Kante). */
   conf: Float32Array;
+  /** 1 = Kante mit blauem Himmel darüber; 0 = Ersatz (oberste Kante ohne Himmel). */
+  blueSky: Uint8Array;
 }
 
 /**
@@ -91,6 +93,7 @@ export interface Skyline {
 export function extractSkyline(rgba: Uint8ClampedArray, w: number, h: number, windows: [number, number][]): Skyline {
   const y = new Float32Array(w).fill(NaN);
   const conf = new Float32Array(w);
+  const blueSky = new Uint8Array(w);
   const col = new Float32Array(h * 3);
   for (let c = 0; c < w; c++) {
     const [y0, y1] = windows[c];
@@ -134,11 +137,13 @@ export function extractSkyline(rgba: Uint8ClampedArray, w: number, h: number, wi
     // Unterste Kante mit blauem Himmel darüber: Wolken weiter oben stören nicht.
     // Ohne blauen Himmel (Hochnebel, Dämmerung): oberste Kante.
     let edge = -1;
+    let skyFound = false;
     for (let i = cands.length - 1; i >= 0; i--) {
       const e = cands[i];
       const above = blue(e - 3, e);
       if (above > 30 && above - blue(e, e + 3) > 25) {
         edge = e;
+        skyFound = true;
         break;
       }
     }
@@ -164,8 +169,9 @@ export function extractSkyline(rgba: Uint8ClampedArray, w: number, h: number, wi
     const sub = den < 0 ? Math.max(-0.5, Math.min(0.5, (0.5 * (gm - gp)) / den)) : 0;
     y[c] = edge + sub;
     conf[c] = q;
+    blueSky[c] = skyFound ? 1 : 0;
   }
-  return { y, conf };
+  return { y, conf, blueSky };
 }
 
 export interface MatchResult {
@@ -392,7 +398,9 @@ export function detectBody(
  * halbe Silhouette verdecken oder der Horizont zu flach für den Kurs ist. Zulässig nur,
  * wo der berechnete Horizont auf ±3° Kurs kaum variiert (ein Kursfehler verfälscht die
  * Neigung dann nicht). Verlangt eine dichte, breite Gruppe von Bildpunkten mit gleicher
- * Höhenabweichung; Ausreißer (Baumkronen, Wolken) bleiben außen vor.
+ * Höhenabweichung; Ausreißer (Baumkronen, Wolken) bleiben außen vor. Nur Spalten mit
+ * blauem Himmel über der Kante übergeben (Skyline.blueSky): ohne Himmel ist eine
+ * waagrechte Kante (Muster, Mauer) nicht vom Horizont zu unterscheiden.
  */
 export function matchPitch(
   points: { x: number; y: number }[],

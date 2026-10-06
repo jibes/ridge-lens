@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { displayHfov, fovLongFromDisplay } from './camera';
+import { displayHfov, fovLongFromDisplay, pickMainCamera } from './camera';
 
 describe('camera field of view', () => {
   it('landscape video filling a landscape screen of same aspect keeps the long-side FOV', () => {
@@ -16,5 +16,20 @@ describe('camera field of view', () => {
   it('inverse round-trips', () => {
     const h = displayHfov(70, 720, 1280, 390, 844);
     expect(fovLongFromDisplay(h, 720, 1280, 390, 844)).toBeCloseTo(70, 6);
+  });
+});
+
+describe('pickMainCamera', () => {
+  const cam = (id: string, label: string) => ({ id, label });
+  it('Android: lowest camera2 index among back cameras', () => {
+    const cams = [cam('a', 'camera2 2, facing back'), cam('b', 'camera2 1, facing front'), cam('c', 'camera2 0, facing back'), cam('d', 'camera2 3, facing back')];
+    expect(pickMainCamera(cams)?.id).toBe('c');
+  });
+  it('iOS: plain back camera, not ultra wide or telephoto', () => {
+    const cams = [cam('u', 'Back Ultra Wide Camera'), cam('m', 'Back Camera'), cam('t', 'Back Telephoto Camera'), cam('d', 'Back Dual Wide Camera')];
+    expect(pickMainCamera(cams)?.id).toBe('m');
+  });
+  it('no labels (no permission) → null', () => {
+    expect(pickMainCamera([cam('x', ''), cam('y', '')])).toBeNull();
   });
 });

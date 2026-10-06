@@ -45,7 +45,11 @@ self.onmessage = (ev: MessageEvent<VisionRequest>) => {
       }
     }
     // Silhouette nur teilweise frei (Bäume) oder zu flach für den Kurs: wenigstens die Neigung
-    const pitch = matchPitch(points, horizon, azStep, cam, cols);
+    const skyPoints: { x: number; y: number }[] = [];
+    for (let c = 0; c < cols; c++) {
+      if (sky.blueSky[c]) skyPoints.push({ x: ((c + 0.5) * cam.width) / cols, y: (sky.y[c] * cam.height) / rows });
+    }
+    const pitch = matchPitch(skyPoints, horizon, azStep, cam, cols);
     if (pitch.ok) {
       self.postMessage({ id: msg.id, cam, match: pitch, source: 'pitch' } satisfies VisionResponse);
       return;

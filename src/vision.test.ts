@@ -237,7 +237,8 @@ function skylinePoints(truth: Camera, sensor: Camera, horizon: Float32Array, opt
   const img = renderImage(truth, horizon, opts);
   const sky = extractSkyline(img, COLS, ROWS, searchWindows(sensor, horizon, AZ_STEP, COLS, ROWS));
   const points: { x: number; y: number }[] = [];
-  for (let c = 0; c < COLS; c++) if (!Number.isNaN(sky.y[c])) points.push({ x: ((c + 0.5) * W) / COLS, y: (sky.y[c] * H) / ROWS });
+  // wie im Worker: nur Spalten mit blauem Himmel über der Kante
+  for (let c = 0; c < COLS; c++) if (sky.blueSky[c]) points.push({ x: ((c + 0.5) * W) / COLS, y: (sky.y[c] * H) / ROWS });
   return points;
 }
 

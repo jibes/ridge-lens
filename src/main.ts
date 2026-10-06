@@ -994,9 +994,13 @@ const videoEl = $<HTMLVideoElement>('camera');
 const cameraFeed = new CameraFeed(videoEl);
 const cameraBtn = $<HTMLButtonElement>('camera-toggle');
 const CAMERA_PREF_KEY = 'ridge-lens-camera';
-const CAMERA_FOV_KEY = 'ridge-lens-camera-fov';
+// v2: ab hier wird die Hauptkamera gewählt; ältere Kalibrierungen stammen oft von der Ultraweitwinkel-Kamera
+const CAMERA_FOV_KEY = 'ridge-lens-camera-fov-v2';
+const CAMERA_DEVICE_KEY = 'ridge-lens-camera-device';
 let cameraWanted = false;
 let cameraFov = loadNumber(CAMERA_FOV_KEY) ?? DEFAULT_CAMERA_FOV;
+/** Gewählte Kamera ('' = automatisch Hauptkamera). */
+let cameraDevice = loadString(CAMERA_DEVICE_KEY);
 /** Sichtfeld vor dem Einschalten der Kamera, wird beim Ausschalten wiederhergestellt. */
 let manualHfov = cam.hfov;
 
@@ -1006,6 +1010,14 @@ function loadNumber(key: string): number | null {
     return Number.isFinite(v) && v > 0 ? v : null;
   } catch {
     return null;
+  }
+}
+
+function loadString(key: string): string {
+  try {
+    return localStorage.getItem(key) ?? '';
+  } catch {
+    return '';
   }
 }
 
@@ -1040,8 +1052,9 @@ async function setCamera(on: boolean, remember = true) {
     if (!cameraWanted) manualHfov = cam.hfov;
     cameraWanted = true;
     try {
-      await cameraFeed.start();
+      await cameraFeed.start(cameraDevice || undefined);
       setNotice('camera', null);
+      void fillCameraSelect();
     } catch (err) {
       cameraWanted = false;
       const msg = err instanceof Error ? err.name || err.message : String(err);
@@ -1063,6 +1076,41 @@ videoEl.addEventListener('resize', requestRender);
 // Nach Rückkehr in den Vordergrund ist der Kamerastrom oft beendet
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && cameraWanted && !cameraFeed.active) void setCamera(true, false);
+});
+
+/** Kamera-Auswahl in den Einstellungen (nur bei mehreren Rückkameras). */
+const cameraSelect = $<HTMLSelectElement>('camera-select');
+async function fillCameraSelect() {
+  const cams = await cameraFeed.backCameras();
+  cameraSelect.parentElement!.hidden = cams.length < 2;
+  const auto = document.createElement('option');
+  auto.value = '';
+  auto.textContent = t('settings.cameraAuto');
+  cameraSelect.replaceChildren(
+    auto,
+    ...cams.map((c, i) => {
+      const o = document.createElement('option');
+      o.value = c.id;
+      o.textContent = c.label || `${t('aria.camera')} ${i + 1}`;
+      return o;
+    }),
+  );
+  cameraSelect.value = cams.some((c) => c.id === cameraDevice) ? cameraDevice : '';
+}
+cameraSelect.addEventListener('change', async () => {
+  cameraDevice = cameraSelect.value;
+  try {
+    localStorage.setItem(CAMERA_DEVICE_KEY, cameraDevice);
+  } catch {
+    /* kein Speicher */
+  }
+  // Andere Kamera, anderer Bildwinkel: Kalibrierung neu beginnen
+  cameraFov = DEFAULT_CAMERA_FOV;
+  saveCameraFov();
+  if (cameraWanted) {
+    cameraFeed.stop();
+    await setCamera(true, false);
+  }
 });
 
 const cameraFovRow = $<HTMLDivElement>('camera-fov-row');
