@@ -1,13 +1,19 @@
 name: Build peak dataset
 
-# Gipfel-Datensatz weltweit (OSM via QLever, Bekanntheit via Wikidata) unabhängig vom
-# Deploy erzeugen. Der Stand liegt auf dem Branch peaks-data (ein einzelner Commit,
-# Historie wächst nicht); OSM wöchentlich neu, fehlende Bekanntheit je Lauf im Zeitbudget.
+# Gipfel-Datensatz weltweit unabhängig vom Deploy erzeugen: benannte Gipfel aus der
+# OSM-Weltdatei (monatlich, mit osmium als Datenstrom gefiltert), Bekanntheit via Wikidata
+# (fehlende Werte je Lauf im Zeitbudget). Der Stand liegt auf dem Branch peaks-data (ein
+# einzelner Commit, Historie wächst nicht).
 on:
   schedule:
     # alle 4 Stunden; ohne fällige Blöcke endet ein Lauf nach Sekunden ohne Veröffentlichung
     - cron: '17 */4 * * *'
   workflow_dispatch:
+    inputs:
+      osm:
+        description: OSM-Auszug neu erzeugen (sonst nur monatlich)
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
@@ -25,7 +31,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -35,6 +41,43 @@ jobs:
         run: |
           scripts/restore-peaks.sh public/peaks
           sha1sum public/peaks/index.json > "$RUNNER_TEMP/index.sha" 2>/dev/null || true
+      - name: Decide OSM refresh
+        id: osm
+        shell: bash
+        run: |
+          cov=$(jq -r '.coverage // empty' public/peaks/index.json 2>/dev/null || true)
+          osm=$(jq -r '.osm // empty' public/peaks/meta.json 2>/dev/null || true)
+          age=999
+          [ -n "$osm" ] && age=$(( ($(date +%s) - $(date -d "$osm" +%s)) / 86400 ))
+          echo "Datensatz: ${cov:-regional}, OSM-Stand ${osm:-keiner} (${age} Tage)"
+          if [ "$cov" != global ] || [ "$age" -ge 30 ] || [ "${{ inputs.osm }}" = true ]; then
+            echo refresh=true >> "$GITHUB_OUTPUT"
+          fi
+      - name: Extract peaks from OSM planet
+        if: steps.osm.outputs.refresh == 'true'
+        shell: bash
+        run: |
+          sudo apt-get install -y -qq osmium-tool >/dev/null
+          # Erste erreichbare Quelle der Weltdatei (OSM-Spiegel bei AWS, Uni-Spiegel, OSMF)
+          url=
+          for u in \
+            https://osm-planet-us-west-2.s3.amazonaws.com/planet/pbf/planet-latest.osm.pbf \
+            https://osm-planet-eu-central-1.s3.amazonaws.com/planet/pbf/planet-latest.osm.pbf \
+            https://ftp.fau.de/osm-planet/pbf/planet-latest.osm.pbf \
+            https://ftp5.gwdg.de/pub/misc/openstreetmap/planet.openstreetmap.org/pbf/planet-latest.osm.pbf \
+            https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf; do
+            if curl -sfIL --max-time 30 -A 'ridge-lens-build (github.com/jibes/ridge-lens)' "$u" -o /dev/null; then url=$u; break; fi
+            echo "nicht erreichbar: $u"
+          done
+          [ -n "$url" ] || { echo "Keine Quelle der OSM-Weltdatei erreichbar"; exit 1; }
+          echo "Quelle: $url"
+          # Als Datenstrom filtern (die ~80 GB werden nie gespeichert); nur Knoten, ohne Referenzen
+          start=$(date +%s)
+          curl -sfL --retry 3 -A 'ridge-lens-build (github.com/jibes/ridge-lens)' "$url" \
+            | osmium tags-filter -F pbf -R - n/natural=peak -o "$RUNNER_TEMP/peaks.osm.pbf"
+          echo "Gefiltert in $(( ($(date +%s) - start) / 60 )) min: $(du -h "$RUNNER_TEMP/peaks.osm.pbf" | cut -f1)"
+          osmium export "$RUNNER_TEMP/peaks.osm.pbf" -f geojsonseq --add-unique-id=type_id -o "$RUNNER_TEMP/peaks.geojsonseq"
+          echo "PEAKS_OSM_GEOJSONSEQ=$RUNNER_TEMP/peaks.geojsonseq" >> "$GITHUB_ENV"
       - name: Fetch peaks and fame
         env:
           PEAKS_BUDGET_MIN: 45

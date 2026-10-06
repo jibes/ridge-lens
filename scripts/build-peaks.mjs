@@ -1,28 +1,20 @@
 // Gipfel-Datensatz weltweit: alle benannten OSM-Gipfel (natural=peak) als 1°-Kacheln nach
-// public/peaks/. Quelle ist QLever (SPARQL über den kompletten OSM-Bestand, Uni Freiburg):
-// eine Abfrage statt tausender Overpass-Blöcke. Die Bekanntheit (Wikidata-Sitelinks) kommt
-// vom Wikidata Query Service und wird in fame.json zwischengespeichert; jeder Lauf ergänzt
-// fehlende Werte im Zeitbudget. OSM-Daten werden wöchentlich aufgefrischt.
+// public/peaks/. Quelle ist ein Auszug aus der OSM-Weltdatei, den der Workflow mit osmium
+// erzeugt (PEAKS_OSM_GEOJSONSEQ, siehe peaks.yml; monatlich). Die Bekanntheit (Wikidata-
+// Sitelinks) kommt vom Wikidata Query Service und wird in fame.json zwischengespeichert;
+// jeder Lauf ergänzt fehlende Werte im Zeitbudget.
 //
 // Kachel:     [[id, lat, lon, ele|null, name, de, en, fr, it, fame, qid?], …] (leere Namen = "")
 //             fame = Zahl der Wikidata-Sitelinks (1 = Verweis, noch unbekannt; 0 = kein Verweis)
 // index.json: { generated, coverage: "global", osm, tiles: ["46_8", …] } (Kacheln ohne Gipfel fehlen)
-// meta.json:  { osm: Zeitpunkt der OSM-Abfrage }
+// meta.json:  { osm: Zeitpunkt des Auszugs }
 // fame.json:  { Q1374: 75, … } (nur für den Build, wird nicht veröffentlicht)
+import { createReadStream } from 'node:fs';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { createInterface } from 'node:readline';
 
-// Kandidaten (Adresse, Methode); die Vorabfrage wählt die erste, die antwortet
-const QLEVER = process.env.QLEVER_API
-  ? [[process.env.QLEVER_API, 'POST']]
-  : [
-      ['https://qlever.dev/api/osm-planet', 'POST'],
-      ['https://qlever.dev/api/osm-planet', 'GET'],
-      ['https://qlever.cs.uni-freiburg.de/api/osm-planet', 'GET'],
-    ];
-let qleverChoice = null;
 const WIKIDATA_SPARQL = process.env.WIKIDATA_SPARQL ?? 'https://query.wikidata.org/sparql';
 const BUDGET_MS = Number(process.env.PEAKS_BUDGET_MIN ?? 40) * 60_000;
-const OSM_MAX_AGE_DAYS = 7;
 const LANGS = ['de', 'en', 'fr', 'it'];
 const HEADERS = { 'User-Agent': 'ridge-lens-build (github.com/jibes/ridge-lens)' };
 const OUT = new URL('../public/peaks/', import.meta.url);
@@ -41,91 +33,30 @@ function parseEle(raw) {
   return Number.isFinite(v) && v > -500 && v < 9000 ? Math.round(v) : null;
 }
 
-/** Ein Feld der QLever-TSV-Ausgabe: <IRI>, "Literal"@lang / "Literal"^^<typ> oder leer. */
-export function parseTerm(t) {
-  if (!t) return '';
-  if (t.startsWith('<') && t.endsWith('>')) return t.slice(1, -1);
-  if (t.startsWith('"')) {
-    const end = t.lastIndexOf('"');
-    return t
-      .slice(1, end > 0 ? end : undefined)
-      .replace(/\\(.)/g, (_, c) => ({ t: '\t', n: '\n', r: '\r' })[c] ?? c);
-  }
-  return t;
-}
-
-/** Zeilen aus der QLever-TSV-Ausgabe (Spalten wie in der SELECT-Klausel). */
-export function parseOsmTsv(text) {
+/**
+ * Gipfel aus dem osmium-Auszug (GeoJSON-Sequenz, eine Zeile je Knoten, Kennung "n123"
+ * per --add-unique-id=type_id). Zeilenweise gelesen: global rund 1 Mio. Zeilen.
+ */
+export async function readExtract(path) {
   const rows = new Map();
-  const lines = text.split('\n');
-  for (let i = 1; i < lines.length; i++) {
-    if (!lines[i]) continue;
-    const [node, wkt, ele, name, ...rest] = lines[i].split('\t').map(parseTerm);
-    const id = Number(/\/node\/(\d+)$/.exec(node)?.[1]);
-    const pt = /POINT\s*\(\s*(-?[\d.]+)\s+(-?[\d.]+)\s*\)/.exec(wkt);
-    if (!id || !pt || !name || rows.has(id)) continue;
-    const qid = /^Q\d+$/.test(rest[LANGS.length] ?? '') ? rest[LANGS.length] : '';
-    rows.set(id, { id, lat: Number(pt[2]), lon: Number(pt[1]), ele: parseEle(ele), name, names: LANGS.map((_, k) => rest[k] ?? ''), qid });
+  const lines = createInterface({ input: createReadStream(path), crlfDelay: Infinity });
+  for await (const raw of lines) {
+    const line = raw.replace(/^\x1e/, '').trim();
+    if (!line) continue;
+    let f;
+    try {
+      f = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const id = Number(/^n(\d+)$/.exec(String(f.id ?? ''))?.[1]);
+    const [lon, lat] = f.geometry?.type === 'Point' ? f.geometry.coordinates : [];
+    const t = f.properties ?? {};
+    if (!id || !Number.isFinite(lat) || !Number.isFinite(lon) || !t.name || rows.has(id)) continue;
+    const qid = /^Q\d+$/.test(t.wikidata ?? '') ? t.wikidata : '';
+    rows.set(id, { id, lat, lon, ele: parseEle(t.ele), name: t.name, names: LANGS.map((l) => t[`name:${l}`] ?? ''), qid });
   }
   return [...rows.values()];
-}
-
-const PREFIXES = `PREFIX osmkey: <https://www.openstreetmap.org/wiki/Key:>
-PREFIX osmnode: <https://www.openstreetmap.org/node/>
-PREFIX geo: <http://www.opengis.net/ont/geosparql#>`;
-
-async function qleverAt([url, method], query, { tsv = true, timeoutMs = 20 * 60_000 } = {}) {
-  const params = new URLSearchParams({ query, ...(tsv ? { action: 'tsv_export' } : {}) });
-  const headers = { ...HEADERS, Accept: tsv ? 'text/tab-separated-values' : 'application/sparql-results+json' };
-  const res =
-    method === 'GET'
-      ? await fetch(`${url}?${params}`, { headers, signal: AbortSignal.timeout(timeoutMs) })
-      : await fetch(url, { method: 'POST', body: params, headers, signal: AbortSignal.timeout(timeoutMs) });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.replace(/\s+/g, ' ').slice(0, 200)}`);
-  return text;
-}
-
-/** Vorabfrage: erste Adresse/Methode, die eine Mini-Abfrage beantwortet. */
-async function chooseQlever() {
-  const probe = `${PREFIXES}\nSELECT ?node WHERE { ?node osmkey:natural "peak" } LIMIT 3`;
-  for (const c of QLEVER) {
-    try {
-      const text = await qleverAt(c, probe, { timeoutMs: 60_000 });
-      console.log(`QLever ${c[1]} ${c[0]}: ok\n${text.trim()}`);
-      return c;
-    } catch (err) {
-      console.warn(`QLever ${c[1]} ${c[0]}: ${err.name === 'TimeoutError' ? 'timeout' : err.message}`);
-    }
-  }
-  throw new Error('QLever nicht erreichbar – Datensatz bleibt unverändert');
-}
-
-async function qlever(query, opts) {
-  qleverChoice ??= await chooseQlever();
-  return qleverAt(qleverChoice, query, opts);
-}
-
-/** Alle benannten Gipfel weltweit; bei leerem Ergebnis Schema-Diagnose ins Log. */
-async function fetchOsm() {
-  const opt = LANGS.map((l, k) => `OPTIONAL { ?node osmkey:name:${l} ?n${k} }`).join(' ');
-  const query = `${PREFIXES}
-SELECT ?node ?wkt ?ele ?name ${LANGS.map((_, k) => `?n${k}`).join(' ')} ?wd WHERE {
-  ?node osmkey:natural "peak" ; osmkey:name ?name ; geo:hasGeometry/geo:asWKT ?wkt .
-  OPTIONAL { ?node osmkey:ele ?ele } ${opt} OPTIONAL { ?node osmkey:wikidata ?wd }
-}`;
-  const t0 = Date.now();
-  const text = await qlever(query);
-  console.log(`QLever: ${(text.length / 1e6).toFixed(1)} MB in ${((Date.now() - t0) / 1000).toFixed(0)} s`);
-  console.log(text.split('\n').slice(0, 3).join('\n'));
-  const rows = parseOsmTsv(text);
-  if (rows.length < Number(process.env.PEAKS_MIN_ROWS ?? 100_000)) {
-    // Schema prüfen: alle Aussagen zum Matterhorn-Knoten
-    const probe = await qlever(`${PREFIXES}\nSELECT ?p ?o WHERE { osmnode:26863664 ?p ?o } LIMIT 60`).catch((e) => String(e));
-    console.log(`Diagnose Matterhorn-Knoten:\n${probe.slice(0, 4000)}`);
-    throw new Error(`nur ${rows.length} Gipfel – Abfrage oder Schema passt nicht, Datensatz bleibt unverändert`);
-  }
-  return rows;
 }
 
 /**
@@ -185,15 +116,23 @@ await mkdir(OUT, { recursive: true });
 const meta = await readJson('meta.json', {});
 const index = await readJson('index.json', null);
 const fame = await readJson('fame.json', {});
-const osmAge = meta.osm ? (Date.now() - Date.parse(meta.osm)) / 86_400_000 : Infinity;
+const extract = process.env.PEAKS_OSM_GEOJSONSEQ;
 
 let rows;
-if (index?.coverage !== 'global' || osmAge > OSM_MAX_AGE_DAYS || process.env.PEAKS_FORCE_OSM) {
-  rows = await fetchOsm();
+if (extract) {
+  rows = await readExtract(extract);
+  console.log(`Auszug: ${rows.length} benannte Gipfel`);
+  if (rows.length < Number(process.env.PEAKS_MIN_ROWS ?? 100_000)) {
+    throw new Error(`nur ${rows.length} Gipfel im Auszug – Datensatz bleibt unverändert`);
+  }
   meta.osm = new Date().toISOString();
-} else {
+} else if (index?.coverage === 'global') {
   rows = await rowsFromTiles();
-  console.log(`OSM-Stand vom ${meta.osm} (${osmAge.toFixed(1)} Tage), ${rows.length} Gipfel aus den Kacheln`);
+  console.log(`OSM-Stand vom ${meta.osm}, ${rows.length} Gipfel aus den Kacheln`);
+} else {
+  // Noch kein globaler Datensatz und kein Auszug: den bisherigen nicht anrühren
+  console.log('Kein Planet-Auszug und noch kein globaler Datensatz – nichts zu tun');
+  process.exit(0);
 }
 
 // Bekanntheit ergänzen, Zwischenstand nach jeder Abfrage sichern
