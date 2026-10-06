@@ -113,3 +113,38 @@ export class CameraFeed {
     this.video.srcObject = null;
   }
 }
+
+/** Messpunkt der Neigungs-Kalibrierung: Lage des Horizonts über der Bildmitte und nötige Neigungskorrektur. */
+export interface TiltSample {
+  /** Winkel des erkannten Horizonts über der Bildmitte (Grad, mit dem angenommenen Bildwinkel). */
+  axis: number;
+  /** Gesamte Neigungskorrektur gegenüber dem Sensor, die dieses Bild verlangt (Grad). */
+  pitch: number;
+}
+
+/**
+ * Bildwinkel aus mehreren Bildern bei verschiedener Neigung: Ist er falsch, wächst die
+ * nötige Neigungskorrektur mit dem Abstand des Horizonts zur Bildmitte (r = c0 + k·a,
+ * k = F_angenommen/F_wahr − 1). Ausgleichsgerade über die Messpunkte; null, solange die
+ * Punkte nicht weit genug streuen oder nicht auf einer Geraden liegen.
+ */
+export function fitTilt(samples: TiltSample[]): { scale: number; pitch: number } | null {
+  const n = samples.length;
+  if (n < 8) return null;
+  const xs = samples.map((s) => s.axis);
+  if (Math.max(...xs) - Math.min(...xs) < 8) return null;
+  const mx = xs.reduce((a, b) => a + b, 0) / n;
+  const my = samples.reduce((a, s) => a + s.pitch, 0) / n;
+  let sxy = 0;
+  let sxx = 0;
+  for (const s of samples) {
+    sxy += (s.axis - mx) * (s.pitch - my);
+    sxx += (s.axis - mx) ** 2;
+  }
+  const k = sxy / sxx;
+  const c0 = my - k * mx;
+  const res = Math.sqrt(samples.reduce((a, s) => a + (s.pitch - c0 - k * s.axis) ** 2, 0) / n);
+  if (res > 0.25 || Math.abs(k) > 0.3) return null;
+  // tan(fov/2) skaliert mit 1/F: F_wahr = F_angenommen/(1+k)
+  return { scale: 1 + k, pitch: c0 };
+}

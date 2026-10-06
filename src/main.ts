@@ -4,9 +4,9 @@ import { decimalYear, declination as magneticDeclination } from './magnetic';
 import { projector, type Camera } from './projection';
 import type { ComputeRequest, PanoramaResult, Peak, WorkerMessage } from './protocol';
 import { applyDom, compassLabels, detectLang, lang, setLang, storedLangChoice, storeLangChoice, t, type Lang } from './i18n';
-import { CameraFeed, DEFAULT_CAMERA_FOV, displayHfov, fovLongFromDisplay } from './camera';
+import { CameraFeed, DEFAULT_CAMERA_FOV, displayHfov, fitTilt, fovLongFromDisplay, type TiltSample } from './camera';
 import type { VisionRequest, VisionResponse } from './vision-worker';
-import type { BodyTarget } from './vision';
+import type { BodyTarget, MatchResult } from './vision';
 import { CAMERA, DARK, LIGHT, renderOverview, renderView, turnToTarget, type PlacedLabel, type SkyBody } from './render';
 import { bodyPath, moonPosition, sunPosition, terrainEvents } from './astro';
 import { buildNightSky, prepareSky, type NightSky, type PreparedSky, type SkyData } from './nightsky';
@@ -868,7 +868,7 @@ function syncSensor() {
     (corrected ? ` · ${t('sensor.corrected', { offset: fmtSigned(offset.heading) })}` : '') +
     (tracker.status === 'relative' ? ` · ${t('sensor.noCompass')}` : '') +
     (performance.now() - lastMatchAt < 3000
-      ? ` · ${t(({ skyline: 'sensor.matched', pitch: 'sensor.matchedPitch', sun: 'sensor.matchedSun', moon: 'sensor.matchedMoon' } as const)[lastMatchSource])}`
+      ? ` · ${t(({ skyline: 'sensor.matched', pitch: 'sensor.matchedPitch', fov: 'sensor.matchedFov', sun: 'sensor.matchedSun', moon: 'sensor.matchedMoon' } as const)[lastMatchSource])}`
       : '');
 }
 
@@ -1148,7 +1148,7 @@ let visionHorizon: Float32Array | null = null;
 let visionBusy = false;
 let visionId = 0;
 let lastMatchAt = -Infinity;
-let lastMatchSource: VisionResponse['source'] = 'skyline';
+let lastMatchSource: VisionResponse['source'] | 'fov' = 'skyline';
 let lastPose: { heading: number; pitch: number } | null = null;
 
 /** Ein Videobild im angezeigten Ausschnitt (object-fit: cover) verkleinert an den Worker. */
@@ -1172,6 +1172,7 @@ function visionTick() {
   visionCtx.drawImage(videoEl, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, cols, rows);
   const pixels = visionCtx.getImageData(0, 0, cols, rows).data;
   visionBusy = true;
+  offsetPitchAtSend = offset.pitch;
   visionWorker.postMessage(
     { type: 'frame', id: ++visionId, pixels, cols, rows, cam: { ...cam }, bodies: visionBodies() } satisfies VisionRequest,
     [pixels.buffer],
@@ -1191,10 +1192,41 @@ function visionBodies(): BodyTarget[] {
   return out;
 }
 
+/**
+ * Bildwinkel-Kalibrierung beim Neigen: Messpunkte des Neigungsabgleichs (Lage des
+ * Horizonts im Bild, nötige Gesamt-Neigungskorrektur) für den aktuellen Bildwinkel.
+ */
+let tiltSamples: (TiltSample & { t: number; fov: number })[] = [];
+/** Neigungskorrektur beim Absenden des Bilds (die Antwort kommt eine Weile später). */
+let offsetPitchAtSend = 0;
+
+function calibrateFromTilt(match: MatchResult, snap: Camera): boolean {
+  const now = performance.now();
+  tiltSamples = tiltSamples.filter((s) => now - s.t < 180_000 && s.fov === cameraFov).slice(-40);
+  tiltSamples.push({ axis: match.axis ?? 0, pitch: offsetPitchAtSend + match.dPitch, t: now, fov: cameraFov });
+  const fit = fitTilt(tiltSamples);
+  if (!fit) return false;
+  const { w, h } = cameraFeed.size;
+  const hfov = (2 * Math.atan(Math.tan((snap.hfov / 2) * (Math.PI / 180)) * fit.scale) * 180) / Math.PI;
+  cameraFov = Math.min(120, Math.max(30, fovLongFromDisplay(hfov, w, h, snap.width, snap.height)));
+  saveCameraFov();
+  offset.pitch = Math.max(-20, Math.min(20, fit.pitch));
+  saveOffset();
+  tiltSamples = [];
+  return true;
+}
+
 visionWorker.onmessage = (ev: MessageEvent<VisionResponse>) => {
   visionBusy = false;
-  const { match, cam: snap, source } = ev.data;
+  const { match, cam: snap } = ev.data;
+  const source = ev.data.source;
   if (!match.ok || !sensorOn || !cameraShown()) return;
+  if (source === 'pitch' && calibrateFromTilt(match, snap)) {
+    lastMatchAt = performance.now();
+    lastMatchSource = 'fov';
+    requestRender();
+    return;
+  }
   // Korrekturen beziehen sich auf die Kamera zum Aufnahmezeitpunkt; Offsets sind darin enthalten
   offset.heading = deltaDeg(offset.heading + VISION_GAIN * match.dHeading, 0);
   offset.pitch = Math.max(-20, Math.min(20, offset.pitch + VISION_GAIN * match.dPitch));

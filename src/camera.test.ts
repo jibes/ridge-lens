@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { displayHfov, fovLongFromDisplay, pickMainCamera } from './camera';
+import { displayHfov, fitTilt, fovLongFromDisplay, pickMainCamera } from './camera';
 
 describe('camera field of view', () => {
   it('landscape video filling a landscape screen of same aspect keeps the long-side FOV', () => {
@@ -31,5 +31,32 @@ describe('pickMainCamera', () => {
   });
   it('no labels (no permission) → null', () => {
     expect(pickMainCamera([cam('x', ''), cam('y', '')])).toBeNull();
+  });
+});
+
+describe('fitTilt', () => {
+  const R = Math.PI / 180;
+  /** Bilder bei verschiedener Neigung: Kamera zeigt Winkel um den Faktor `wide` weiter als angenommen, Sensor-Neigung um `bias` daneben. */
+  const samples = (wide: number, bias: number, axes: number[]) =>
+    axes.map((a) => {
+      // Horizont-Pixel bei angenommenem Winkel a liegt in Wahrheit bei atan(tan(a)·wide)
+      const truth = Math.atan(Math.tan(a * R) * wide) / R;
+      return { axis: a, pitch: truth - a + bias + Math.sin(a * 7) * 0.03 };
+    });
+
+  it('recovers field-of-view scale and pitch bias from tilting', () => {
+    const f = fitTilt(samples(1.08, -1.2, [-12, -9, -6, -3, 0, 3, 6, 9, 12, 15]))!;
+    expect(f.scale).toBeCloseTo(1.08, 1);
+    expect(f.pitch).toBeCloseTo(-1.2, 1);
+  });
+
+  it('needs enough spread and points', () => {
+    expect(fitTilt(samples(1.08, 0, [-2, -1, 0, 1, 2, 3, 1, 0]))).toBeNull();
+    expect(fitTilt(samples(1.08, 0, [-10, 0, 10]))).toBeNull();
+  });
+
+  it('rejects scattered measurements', () => {
+    const s = samples(1, 0, [-12, -9, -6, -3, 0, 3, 6, 9, 12]).map((x, i) => ({ ...x, pitch: x.pitch + (i % 2 ? 1 : -1) }));
+    expect(fitTilt(s)).toBeNull();
   });
 });

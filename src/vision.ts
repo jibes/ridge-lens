@@ -182,6 +182,8 @@ export interface MatchResult {
   fovScale: number;
   /** Mittlere (gekappte) Restabweichung in Grad. */
   cost: number;
+  /** Nur Neigungsabgleich: Winkel des erkannten Horizonts über der Bildmitte (für die Bildwinkel-Kalibrierung). */
+  axis?: number;
   reason?: 'few-columns' | 'flat-horizon' | 'poor-fit' | 'ambiguous';
 }
 
@@ -416,7 +418,7 @@ export function matchPitch(
     const [az, el] = screenToDir(cam, p.x, p.y);
     const model = horizonAt(horizon, azStep, az);
     const shift = Math.max(Math.abs(horizonAt(horizon, azStep, az + 3) - model), Math.abs(horizonAt(horizon, azStep, az - 3) - model));
-    return { x: p.x, r: model - el, model, shift };
+    return { x: p.x, r: model - el, model, shift, axis: el - cam.pitch };
   });
   // Kursunabhängig? Median der Änderung bei ±3° Kurs
   const shifts = pts.map((p) => p.shift).sort((a, b) => a - b);
@@ -461,5 +463,6 @@ export function matchPitch(
     rival = Math.max(rival, cluster(p.r).filter((q) => Math.abs(q.r - mean) >= 0.6).length);
   }
   if (rival > 0.6 * best.length) return fail('ambiguous');
-  return { ok: true, dHeading: 0, dPitch: mean, fovScale: 1, cost: std };
+  const axis = best.reduce((s, p) => s + p.axis, 0) / best.length;
+  return { ok: true, dHeading: 0, dPitch: mean, fovScale: 1, cost: std, axis };
 }
