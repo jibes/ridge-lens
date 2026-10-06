@@ -11,7 +11,15 @@
 // fame.json:  { Q1374: 75, … } (nur für den Build, wird nicht veröffentlicht)
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 
-const QLEVER = process.env.QLEVER_API ?? 'https://qlever.cs.uni-freiburg.de/api/osm-planet';
+// Kandidaten (Adresse, Methode); die Vorabfrage wählt die erste, die antwortet
+const QLEVER = process.env.QLEVER_API
+  ? [[process.env.QLEVER_API, 'POST']]
+  : [
+      ['https://qlever.dev/api/osm-planet', 'POST'],
+      ['https://qlever.dev/api/osm-planet', 'GET'],
+      ['https://qlever.cs.uni-freiburg.de/api/osm-planet', 'GET'],
+    ];
+let qleverChoice = null;
 const WIKIDATA_SPARQL = process.env.WIKIDATA_SPARQL ?? 'https://query.wikidata.org/sparql';
 const BUDGET_MS = Number(process.env.PEAKS_BUDGET_MIN ?? 40) * 60_000;
 const OSM_MAX_AGE_DAYS = 7;
@@ -66,16 +74,36 @@ const PREFIXES = `PREFIX osmkey: <https://www.openstreetmap.org/wiki/Key:>
 PREFIX osmnode: <https://www.openstreetmap.org/node/>
 PREFIX geo: <http://www.opengis.net/ont/geosparql#>`;
 
-async function qlever(query, { tsv = true, timeoutMs = 20 * 60_000 } = {}) {
-  const res = await fetch(QLEVER, {
-    method: 'POST',
-    body: new URLSearchParams({ query, ...(tsv ? { action: 'tsv_export' } : {}), timeout: '1200s' }),
-    headers: { ...HEADERS, Accept: tsv ? 'text/tab-separated-values' : 'application/sparql-results+json' },
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+async function qleverAt([url, method], query, { tsv = true, timeoutMs = 20 * 60_000 } = {}) {
+  const params = new URLSearchParams({ query, ...(tsv ? { action: 'tsv_export' } : {}) });
+  const headers = { ...HEADERS, Accept: tsv ? 'text/tab-separated-values' : 'application/sparql-results+json' };
+  const res =
+    method === 'GET'
+      ? await fetch(`${url}?${params}`, { headers, signal: AbortSignal.timeout(timeoutMs) })
+      : await fetch(url, { method: 'POST', body: params, headers, signal: AbortSignal.timeout(timeoutMs) });
   const text = await res.text();
-  if (!res.ok) throw new Error(`QLever HTTP ${res.status}: ${text.slice(0, 300)}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.replace(/\s+/g, ' ').slice(0, 200)}`);
   return text;
+}
+
+/** Vorabfrage: erste Adresse/Methode, die eine Mini-Abfrage beantwortet. */
+async function chooseQlever() {
+  const probe = `${PREFIXES}\nSELECT ?node WHERE { ?node osmkey:natural "peak" } LIMIT 3`;
+  for (const c of QLEVER) {
+    try {
+      const text = await qleverAt(c, probe, { timeoutMs: 60_000 });
+      console.log(`QLever ${c[1]} ${c[0]}: ok\n${text.trim()}`);
+      return c;
+    } catch (err) {
+      console.warn(`QLever ${c[1]} ${c[0]}: ${err.name === 'TimeoutError' ? 'timeout' : err.message}`);
+    }
+  }
+  throw new Error('QLever nicht erreichbar – Datensatz bleibt unverändert');
+}
+
+async function qlever(query, opts) {
+  qleverChoice ??= await chooseQlever();
+  return qleverAt(qleverChoice, query, opts);
 }
 
 /** Alle benannten Gipfel weltweit; bei leerem Ergebnis Schema-Diagnose ins Log. */
