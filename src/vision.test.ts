@@ -38,7 +38,7 @@ function noise(a: number) {
 function renderImage(
   cam: Camera,
   horizon: Float32Array,
-  opts: { fog?: boolean; treeline?: number; clouds?: boolean; highClouds?: boolean; straightEdge?: boolean; testPattern?: boolean; treesLeft?: boolean } = {},
+  opts: { fog?: boolean; treeline?: number; clouds?: boolean; highClouds?: boolean; straightEdge?: boolean; testPattern?: boolean; treesLeft?: boolean; dusk?: boolean; noSnow?: boolean } = {},
 ): Uint8ClampedArray {
   const img = new Uint8ClampedArray(COLS * ROWS * 4);
   for (let r = 0; r < ROWS; r++) {
@@ -56,8 +56,9 @@ function renderImage(
       else if (opts.treesLeft && x < W * 0.5 && el < hz + 4 + 2 * Math.sin(x * 0.11) + Math.sin(x * 0.37)) rgb = [45, 70, 40]; // Baumkronen links bis über den Horizont
       else if (el > hz && opts.clouds && Math.sin(az * 0.9) + Math.sin(el * 2.3 + az * 0.2) > 1.2) rgb = [225, 228, 232]; // Wolken bis an den Grat
       else if (el > hz + 1 && opts.highClouds && Math.sin(az * 0.9) + Math.sin(el * 2.3 + az * 0.2) > 0.8) rgb = [225, 228, 232]; // Wolken über den Gipfeln
+      else if (el > hz && opts.dusk) rgb = [225, 200, 200]; // Abendrot, Dunst
       else if (el > hz) rgb = [110 + r * 0.2, 160 + r * 0.15, 225];
-      else if (el > hz - 0.6) rgb = [235, 238, 242]; // Schnee am Grat
+      else if (el > hz - 0.6 && !opts.noSnow) rgb = [235, 238, 242]; // Schnee am Grat
       else if (el > hz - 3) rgb = [120, 115, 110]; // Fels
       else rgb = [70, 85, 60];
       img[p] = rgb[0] + noise(8);
@@ -252,6 +253,17 @@ describe('pitch-only alignment', () => {
     expect(m.ok).toBe(true);
     expect(m.dHeading).toBe(0);
     expect(Math.abs(sensor.pitch + m.dPitch - truth.pitch)).toBeLessThan(0.15);
+  });
+
+  it('works under a pale dusk sky', () => {
+    const horizon = gentleHorizon();
+    const sensor: Camera = { ...truth, heading: truth.heading + 3, pitch: truth.pitch + 1.5 };
+    const m = matchPitch(skylinePoints(truth, sensor, horizon, { treesLeft: true, dusk: true, noSnow: true }), horizon, AZ_STEP, sensor, COLS);
+    expect(m.ok).toBe(true);
+    expect(Math.abs(sensor.pitch + m.dPitch - truth.pitch)).toBeLessThan(0.15);
+    // Schneeband unter dem Grat: Kante Schnee/Fels darf nicht als Horizont gelten
+    const snow = matchPitch(skylinePoints(truth, sensor, horizon, { treesLeft: true, dusk: true }), horizon, AZ_STEP, sensor, COLS);
+    expect(!snow.ok || Math.abs(sensor.pitch + snow.dPitch - truth.pitch) < 0.15).toBe(true);
   });
 
   it('refuses where the heading matters (structured mountains)', () => {

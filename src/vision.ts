@@ -81,7 +81,7 @@ export interface Skyline {
   y: Float32Array;
   /** Trennschärfe je Spalte (0 = keine Kante). */
   conf: Float32Array;
-  /** 1 = Kante mit blauem Himmel darüber; 0 = Ersatz (oberste Kante ohne Himmel). */
+  /** 1 = Kante mit Himmel darüber (blau oder hell: Dunst, Abendrot); 0 = Ersatz (oberste Kante ohne Himmel). */
   blueSky: Uint8Array;
 }
 
@@ -136,6 +136,20 @@ export function extractSkyline(rgba: Uint8ClampedArray, w: number, h: number, wi
     };
     // Unterste Kante mit blauem Himmel darüber: Wolken weiter oben stören nicht.
     // Ohne blauen Himmel (Hochnebel, Dämmerung): oberste Kante.
+    // Heller, farbneutraler bis warmer Himmel (Dunst, Abendrot): deutlich heller als das Gelände
+    const lum = (a: number, b: number) => {
+      let sum = 0;
+      for (let r = Math.max(0, a); r < Math.min(h, b); r++) sum += 0.3 * col[r * 3] + 0.59 * col[r * 3 + 1] + 0.11 * col[r * 3 + 2];
+      return sum / Math.max(1, Math.min(h, b) - Math.max(0, a));
+    };
+    const green = (a: number, b: number) => {
+      let sum = 0;
+      for (let r = Math.max(0, a); r < Math.min(h, b); r++) sum += col[r * 3 + 1] - Math.max(col[r * 3], col[r * 3 + 2]);
+      return sum / Math.max(1, Math.min(h, b) - Math.max(0, a));
+    };
+    // Himmel bis zum Fensteranfang gleich hell: schwache Kante darüber (Himmel/Schnee) schließt aus
+    const paleSky = (e: number) =>
+      lum(e - 3, e) > 150 && lum(e - 3, e) - lum(e, e + 3) > 50 && green(e - 3, e) < 10 && Math.abs(lum(from - 2, e - 3) - lum(e - 3, e)) < 15;
     let edge = -1;
     let skyFound = false;
     for (let i = cands.length - 1; i >= 0; i--) {
@@ -146,6 +160,11 @@ export function extractSkyline(rgba: Uint8ClampedArray, w: number, h: number, wi
         skyFound = true;
         break;
       }
+    }
+    // Sonst oberste Kante, falls heller Himmel darüber (darunter liegende Kanten wie Schnee/Fels nie)
+    if (edge < 0 && paleSky(cands[0])) {
+      edge = cands[0];
+      skyFound = true;
     }
     if (edge < 0) {
       if (blue(0, from) > 30) continue; // blauer Himmel vorhanden, aber keine passende Kante

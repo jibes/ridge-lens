@@ -613,14 +613,16 @@ function drawPeaks(
     const wMeta = ctx.measureText(meta).width;
     const len = wName + 6 + wMeta;
     // Text oben bündig (liest von unten nach oben); Leitlinie vom Gipfel bis zum Textende
+    // Horizont dicht am oberen Rand (Gerät stark nach unten geneigt): Text unter dem Gipfel
+    const below = y - labelTop < len + 14 && cam.height - y > len + 24;
     const dayTop = Math.max(labelTop + 10, Math.min(y - 10, labelTop + len + 4));
-    const top = dayTop + (Math.max(dayTop, y - 14) - dayTop) * nf;
+    const top = below ? y + 14 + len : dayTop + (Math.max(dayTop, y - 14) - dayTop) * nf;
     ctx.globalAlpha = selected ? 1 : 1 - 0.45 * nf;
     ctx.strokeStyle = selected ? pal.accent : peak.visible ? pal.leader : pal.hidden;
     ctx.lineWidth = selected ? 1.5 : 1;
     ctx.beginPath();
-    ctx.moveTo(x + 0.5, y - 4);
-    ctx.lineTo(x + 0.5, top);
+    ctx.moveTo(x + 0.5, below ? y + 4 : y - 4);
+    ctx.lineTo(x + 0.5, below ? y + 10 : top);
     ctx.stroke();
     ctx.fillStyle = peak.visible || selected ? pal.accent : pal.hidden;
     ctx.beginPath();
