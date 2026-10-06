@@ -503,3 +503,15 @@ form details.more {
   white-space: pre-line;
   font-variant-numeric: tabular-nums;
 }
+
+/* Nachts gedämpft */
+body.night-ui .pill,
+body.night-ui .toast,
+body.night-ui .readout,
+body.night-ui .dock,
+body.night-ui .sheet {
+  filter: brightness(0.55);
+}
+body.night-ui #view {
+  filter: brightness(0.75);
+}

@@ -225,11 +225,14 @@ function render() {
   const overlay = cameraShown();
   // Nachts dunkles Schema auch bei hellem System, sonst leuchten Labels auf dem Nachthimmel
   const palette = overlay ? CAMERA : darkScheme.matches || (night?.fade ?? 0) > 0.5 ? DARK : LIGHT;
+  // Nachts Bedienelemente und Overlay dämpfen (blendet nicht, Augen bleiben dunkeladaptiert)
+  document.body.classList.toggle('night-ui', (night?.fade ?? 0) > 0.5);
   viewCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   labels = renderView(viewCtx, cam, pano, {
     palette,
     showHidden: hiddenIn.checked,
-    crosshair: sensorOn,
+    // Fadenkreuz nur zum manuellen Kalibrieren (Gipfel anpeilen, übernehmen)
+    crosshair: sensorOn && manualCal,
     selectedPeakId: selected?.id ?? null,
     targetPeakId: targetId,
     bottomInset: view.getBoundingClientRect().bottom - (targetChip.hidden ? dockEl : targetChip).getBoundingClientRect().top + 8,
@@ -1294,6 +1297,7 @@ manualCalIn.addEventListener('change', () => {
   }
   updateAlignBar();
   updateNoise();
+  requestRender();
 });
 
 const visionWorker = new Worker(new URL('./vision-worker.ts', import.meta.url), { type: 'module' });
