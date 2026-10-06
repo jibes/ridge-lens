@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 import { Dem, fetchTerrariumTile, metersPerPixel } from './dem';
 import { bearing, distance, elevationAngle, type LatLon } from './geo';
-import { castRay, extractRidges, linkRidges, observerGround, occlusionAngle, pruneLines, skylineRelief, type RayOptions, type RidgePoint, type Sampler } from './panorama';
+import { castRay, extractRidges, linkRidges, observerGround, occlusionAngle, pruneLines, skylineRelief, type MercSampler, type RayOptions, type RidgePoint, type Sampler } from './panorama';
 import { loadPeakTiles, tilesFor, type PeakRaw, type PeakTile } from './peaks';
 import type { Key } from './i18n';
 import type { ComputeRequest, PanoramaResult, Peak, PeakTileProgress, WorkerMessage } from './protocol';
@@ -63,6 +63,14 @@ async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?
     }
     return far.elevation(lat, lon);
   };
+  // Dasselbe in Mercator-Koordinaten für die Strahlen (heißer Pfad)
+  const sampleMerc: MercSampler = (x, y, d) => {
+    if (d < NEAR_RADIUS) {
+      const h = near.elevationMerc(x, y);
+      if (!Number.isNaN(h)) return h;
+    }
+    return far.elevationMerc(x, y);
+  };
 
   post({ id, type: 'progress', key: 'progress.peaks' });
   const timeout = new Promise<null>((r) => setTimeout(() => r(null), FIRST_TILE_WAIT_MS));
@@ -89,13 +97,14 @@ async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?
     step: (d) => Math.max(10, Math.min(d * 0.01, d < NEAR_RADIUS ? nearRes : farRes)),
   };
 
-  post({ id, type: 'progress', key: 'progress.ridges' });
+  post({ id, type: 'progress', key: 'progress.ridges', params: { pct: 0 } });
   const nBins = Math.round(360 / AZ_STEP);
   const horizon = new Float32Array(nBins);
   const bins: RidgePoint[][] = [];
   const ray = { dists: [] as number[], angles: [] as number[] };
   for (let i = 0; i < nBins; i++) {
-    castRay(sample, observer, h0, i * AZ_STEP, rayOpts, ray);
+    if (i > 0 && i % 360 === 0) post({ id, type: 'progress', key: 'progress.ridges', params: { pct: Math.round((100 * i) / nBins) } });
+    castRay(sampleMerc, observer, h0, i * AZ_STEP, rayOpts, ray);
     const { ridges, horizon: hz } = extractRidges(ray.dists, ray.angles);
     bins.push(ridges);
     horizon[i] = hz;
@@ -116,7 +125,7 @@ async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?
       if (Number.isNaN(ele)) continue;
       const az = bearing(observer, p);
       const angle = elevationAngle(h0, ele, dist);
-      const occ = occlusionAngle(sample, observer, h0, az, dist, rayOpts);
+      const occ = occlusionAngle(sampleMerc, observer, h0, az, dist, rayOpts);
       const visible = angle >= occ - 0.05;
       const relief = visible ? skylineRelief(horizon, AZ_STEP, az, angle) : 0;
       out.push({ id: p.id, name: p.name, names: p.names, lat: p.lat, lon: p.lon, ele, eleFromOsm: useOsm, fame: p.fame, dist, az, angle, visible, relief });

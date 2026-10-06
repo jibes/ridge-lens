@@ -1,7 +1,63 @@
-import { destination, elevationAngle, type LatLon } from './geo';
+import { curvatureDrop, destination, elevationAngle, type LatLon } from './geo';
 
 /** Geländehöhe (m) am Punkt, `d` = Distanz vom Beobachter (für Wahl der Auflösung). */
 export type Sampler = (lat: number, lon: number, d: number) => number;
+
+/**
+ * Wie Sampler, aber in Web-Mercator-Weltkoordinaten (0…1). Spart je Abtastpunkt die
+ * Projektion – der Strahl wird dazwischen linear interpoliert (siehe castRay).
+ */
+export type MercSampler = (x: number, y: number, d: number) => number;
+
+/** Lat/Lon (Grad) → Web-Mercator-Weltkoordinaten (0…1). */
+export function toMerc(lat: number, lon: number): [number, number] {
+  const s = Math.sin((lat * Math.PI) / 180);
+  return [(lon + 180) / 360, 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)];
+}
+
+/** Lat/Lon-Sampler als MercSampler (für Tests und einfache Gelände). */
+export function mercSampler(sample: Sampler): MercSampler {
+  return (x, y, d) => sample((Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180) / Math.PI, x * 360 - 180, d);
+}
+
+/** Abstand der exakt berechneten Stützpunkte entlang eines Strahls (m). */
+const KNOT = 1000;
+
+/**
+ * Läuft einen Großkreis-Strahl ab: Stützpunkte alle KNOT m exakt (destination),
+ * dazwischen linear in Mercator-Koordinaten – Abweichung < 1 cm, aber ohne
+ * Trigonometrie je Abtastpunkt. `visit` erhält Distanz und Höhe.
+ */
+function walkRay(
+  sample: MercSampler,
+  observer: LatLon,
+  az: number,
+  from: number,
+  to: number,
+  step: (d: number) => number,
+  visit: (d: number, h: number) => void,
+): void {
+  let k = -1;
+  let x0 = 0;
+  let y0 = 0;
+  let dx = 0;
+  let dy = 0;
+  for (let d = from; d <= to; d += step(d)) {
+    const kk = Math.floor(d / KNOT);
+    if (kk !== k) {
+      k = kk;
+      const a = destination(observer, az, k * KNOT);
+      const b = destination(observer, az, (k + 1) * KNOT);
+      [x0, y0] = toMerc(a.lat, a.lon);
+      const [x1, y1] = toMerc(b.lat, b.lon);
+      dx = x1 - x0;
+      dy = y1 - y0;
+    }
+    const t = (d - k * KNOT) / KNOT;
+    const h = sample(x0 + dx * t, y0 + dy * t, d);
+    if (!Number.isNaN(h)) visit(d, h);
+  }
+}
 
 export interface RidgePoint {
   angle: number;
@@ -18,7 +74,7 @@ export interface RayOptions {
 
 /** Tastet einen Strahl ab: Distanzen und scheinbare Höhenwinkel. */
 export function castRay(
-  sample: Sampler,
+  sample: MercSampler,
   observer: LatLon,
   h0: number,
   az: number,
@@ -27,13 +83,10 @@ export function castRay(
 ): void {
   out.dists.length = 0;
   out.angles.length = 0;
-  for (let d = opts.minDist; d <= opts.maxDist; d += opts.step(d)) {
-    const p = destination(observer, az, d);
-    const h = sample(p.lat, p.lon, d);
-    if (Number.isNaN(h)) continue;
+  walkRay(sample, observer, az, opts.minDist, opts.maxDist, opts.step, (d, h) => {
     out.dists.push(d);
     out.angles.push(elevationAngle(h0, h, d));
-  }
+  });
 }
 
 /**
@@ -205,7 +258,7 @@ export function observerGround(sample: Sampler, observer: LatLon): number {
 
 /** Maximaler Höhenwinkel des Geländes zwischen Beobachter und Ziel. */
 export function occlusionAngle(
-  sample: Sampler,
+  sample: MercSampler,
   observer: LatLon,
   h0: number,
   az: number,
@@ -213,13 +266,13 @@ export function occlusionAngle(
   opts: RayOptions,
 ): number {
   const end = targetDist - Math.max(300, 0.03 * targetDist);
-  let maxA = -Infinity;
-  for (let d = opts.minDist; d < end; d += opts.step(d)) {
-    const p = destination(observer, az, d);
-    const h = sample(p.lat, p.lon, d);
-    if (!Number.isNaN(h)) maxA = Math.max(maxA, elevationAngle(h0, h, d));
-  }
-  return maxA;
+  // Höhenwinkel steigt monoton mit (h − h0 − Absenkung)/d: Maximum über das Verhältnis, ein atan am Ende
+  let maxSlope = -Infinity;
+  walkRay(sample, observer, az, opts.minDist, end - 1e-6, opts.step, (d, h) => {
+    const slope = (h - h0 - curvatureDrop(d)) / d;
+    if (slope > maxSlope) maxSlope = slope;
+  });
+  return maxSlope === -Infinity ? -Infinity : (Math.atan(maxSlope) * 180) / Math.PI;
 }
 
 /**

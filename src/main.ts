@@ -234,16 +234,23 @@ function showResultStatus(result: PanoramaResult) {
 
 /** Startbildschirm ausblenden (nach erstem Ergebnis oder Fehler, spätestens nach 10 s). */
 const splash = document.getElementById('splash');
+/** Splash nur kurz: weg, sobald gerechnet wird (frühestens 0,6 s), spätestens nach 2,5 s – Fortschritt zeigt die Statuszeile. */
+const splashSince = performance.now();
 function hideSplash() {
   if (!splash || splash.classList.contains('done')) return;
+  const wait = 600 - (performance.now() - splashSince);
+  if (wait > 0) {
+    setTimeout(hideSplash, wait);
+    return;
+  }
   splash.classList.add('done');
   setTimeout(() => splash.remove(), 500);
 }
-setTimeout(hideSplash, 10_000);
+setTimeout(hideSplash, 2500);
 
 worker.onmessage = (ev: MessageEvent<WorkerMessage>) => {
   const msg = ev.data;
-  if (msg.type === 'result' || msg.type === 'error') hideSplash();
+  hideSplash();
   // Nachzügler einer früheren Berechnung (anderer Standort) verwerfen
   if (msg.id !== requestId) return;
   if (msg.type === 'peaks') {

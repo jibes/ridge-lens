@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { castRay, extractRidges, linkRidges, observerGround, occlusionAngle, pruneLines, skylineRelief, type RidgePoint, type Sampler } from './panorama';
+import { castRay, extractRidges, linkRidges, mercSampler, observerGround, occlusionAngle, pruneLines, skylineRelief, type RidgePoint, type Sampler } from './panorama';
 
 describe('extractRidges', () => {
   it('finds front ridge and skyline', () => {
@@ -72,7 +72,7 @@ describe('ray casting', () => {
 
   it('detects ridge to the north', () => {
     const ray = { dists: [] as number[], angles: [] as number[] };
-    castRay(sample, observer, 502, 0, opts, ray);
+    castRay(mercSampler(sample), observer, 502, 0, opts, ray);
     const { ridges } = extractRidges(ray.dists, ray.angles);
     expect(ridges.length).toBe(1);
     // Flaches Plateau: die vordere Kante (ca. 4.8 km) ist die Silhouette
@@ -82,9 +82,9 @@ describe('ray casting', () => {
   });
 
   it('peak behind ridge is occluded, ridge itself not', () => {
-    const occ = occlusionAngle(sample, observer, 502, 0, 15000, opts);
+    const occ = occlusionAngle(mercSampler(sample), observer, 502, 0, 15000, opts);
     expect(occ).toBeGreaterThan(9);
-    const occFront = occlusionAngle(sample, observer, 502, 0, 4000, opts);
+    const occFront = occlusionAngle(mercSampler(sample), observer, 502, 0, 4000, opts);
     expect(occFront).toBeLessThan(0.1);
   });
 });

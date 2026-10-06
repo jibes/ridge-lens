@@ -104,6 +104,12 @@ export async function decodePng(data: Uint8Array): Promise<{ width: number; heig
 export class Dem {
   private tiles = new Map<number, Float32Array | null>();
   private readonly n: number;
+  /** Kacheln als Raster über das geladene Rechteck (schneller als die Map je Bildpunkt). */
+  private grid: (Float32Array | null)[] = [];
+  private gx0 = 0;
+  private gy0 = 0;
+  private gw = 0;
+  private gh = 0;
 
   constructor(readonly z: number) {
     this.n = 2 ** z;
@@ -146,7 +152,59 @@ export class Dem {
       }
     };
     await Promise.all(Array.from({ length: 6 }, worker));
+    this.buildGrid();
     return { total: jobs.length, failed };
+  }
+
+  private buildGrid() {
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (const k of this.tiles.keys()) {
+      const x = k % this.n;
+      const y = (k - x) / this.n;
+      x0 = Math.min(x0, x);
+      x1 = Math.max(x1, x);
+      y0 = Math.min(y0, y);
+      y1 = Math.max(y1, y);
+    }
+    if (x0 === Infinity) return;
+    this.gx0 = x0;
+    this.gy0 = y0;
+    this.gw = x1 - x0 + 1;
+    this.gh = y1 - y0 + 1;
+    this.grid = Array.from({ length: this.gw * this.gh }, (_, i) => this.tiles.get(this.key(x0 + (i % this.gw), y0 + Math.floor(i / this.gw))) ?? null);
+  }
+
+  /** Höhe aus globalen Bildpunkt-Koordinaten (bilinear); NaN außerhalb geladener Kacheln. */
+  private bilinear(fx: number, fy: number): number {
+    const ix = Math.floor(fx);
+    const iy = Math.floor(fy);
+    const ax = fx - ix;
+    const ay = fy - iy;
+    const tx = Math.floor(ix / TILE) - this.gx0;
+    const ty = Math.floor(iy / TILE) - this.gy0;
+    const lx = ix & (TILE - 1);
+    const ly = iy & (TILE - 1);
+    // Häufigster Fall: alle vier Nachbarn in derselben Kachel
+    if (lx < TILE - 1 && ly < TILE - 1 && tx >= 0 && ty >= 0 && tx < this.gw && ty < this.gh) {
+      const t = this.grid[ty * this.gw + tx];
+      if (!t) return NaN;
+      const i = ly * TILE + lx;
+      return (t[i] * (1 - ax) + t[i + 1] * ax) * (1 - ay) + (t[i + TILE] * (1 - ax) + t[i + TILE + 1] * ax) * ay;
+    }
+    const a = this.pixel(ix, iy);
+    const b = this.pixel(ix + 1, iy);
+    const c = this.pixel(ix, iy + 1);
+    const d = this.pixel(ix + 1, iy + 1);
+    return (a * (1 - ax) + b * ax) * (1 - ay) + (c * (1 - ax) + d * ax) * ay;
+  }
+
+  /** Höhe in Metern aus Web-Mercator-Weltkoordinaten (0…1). */
+  elevationMerc(x: number, y: number): number {
+    const scale = TILE * this.n;
+    return this.bilinear(x * scale - 0.5, y * scale - 0.5);
   }
 
   private pixel(px: number, py: number): number {
@@ -161,16 +219,6 @@ export class Dem {
   elevation(lat: number, lon: number): number {
     const [x, y] = lonLatToPixel(lat, lon, this.z);
     // Pixelzentren liegen bei +0.5
-    const fx = x - 0.5;
-    const fy = y - 0.5;
-    const ix = Math.floor(fx);
-    const iy = Math.floor(fy);
-    const ax = fx - ix;
-    const ay = fy - iy;
-    const a = this.pixel(ix, iy);
-    const b = this.pixel(ix + 1, iy);
-    const c = this.pixel(ix, iy + 1);
-    const d = this.pixel(ix + 1, iy + 1);
-    return (a * (1 - ax) + b * ax) * (1 - ay) + (c * (1 - ax) + d * ax) * ay;
+    return this.bilinear(x - 0.5, y - 0.5);
   }
 }
