@@ -1,41 +1,28 @@
-// Lädt benannte Gipfel (OSM natural=peak) für die Alpen und Umgebung über Overpass
-// und schreibt sie als 1°-Kacheln nach public/peaks/. Läuft im CI vor dem Build.
+// Gipfel-Datensatz weltweit: alle benannten OSM-Gipfel (natural=peak) als 1°-Kacheln nach
+// public/peaks/. Quelle ist QLever (SPARQL über den kompletten OSM-Bestand, Uni Freiburg):
+// eine Abfrage statt tausender Overpass-Blöcke. Die Bekanntheit (Wikidata-Sitelinks) kommt
+// vom Wikidata Query Service und wird in fame.json zwischengespeichert; jeder Lauf ergänzt
+// fehlende Werte im Zeitbudget. OSM-Daten werden wöchentlich aufgefrischt.
 //
-// Overpass ist oft überlastet (429/504). Deshalb inkrementell: Abfrage in 2°-Blöcken,
-// nach jedem Block wird gespeichert; ein Zeitbudget beendet den Lauf rechtzeitig, damit
-// der CI-Cache den Stand sichert. Folgeläufe holen fehlende und veraltete Blöcke nach,
-// beginnend in der Mitte der Alpen.
-//
-// Kachel:   [[id, lat, lon, ele|null, name, de, en, fr, it, fame], …] (leere Namen = "")
-//           fame = Zahl der Wikidata-Sitelinks (Wikipedia-Sprachversionen u. a.; 1 = Verweis, Abfrage fehlgeschlagen; 0 = kein Verweis)
-// index.json: { generated, region, blockSize, blocks: ["46_8", …], tiles: ["46_8", …] }
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+// Kachel:     [[id, lat, lon, ele|null, name, de, en, fr, it, fame, qid?], …] (leere Namen = "")
+//             fame = Zahl der Wikidata-Sitelinks (1 = Verweis, noch unbekannt; 0 = kein Verweis)
+// index.json: { generated, coverage: "global", osm, tiles: ["46_8", …] } (Kacheln ohne Gipfel fehlen)
+// meta.json:  { osm: Zeitpunkt der OSM-Abfrage }
+// fame.json:  { Q1374: 75, … } (nur für den Build, wird nicht veröffentlicht)
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 
-const REGION = { south: 42, north: 50, west: 2, east: 18 };
-const BLOCK = 2;
-const CENTER = { lat: 46.75, lon: 8.25 };
-const MAX_AGE_DAYS = 30;
-// Blöcke älter als das aktuelle Kachelformat (Bekanntheit ergänzt) gelten als veraltet
-const FORMAT_SINCE = Date.parse('2026-10-06T14:00:00Z');
-const BUDGET_MS = Number(process.env.PEAKS_BUDGET_MIN ?? 20) * 60_000;
-const PAUSE_MS = Number(process.env.PEAKS_PAUSE_MS ?? 2_000);
-const ENDPOINTS = process.env.OVERPASS_ENDPOINTS?.split(',') ?? [
-  'https://overpass-api.de/api/interpreter',
-  'https://overpass.private.coffee/api/interpreter',
-  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
-];
-const LANGS = ['de', 'en', 'fr', 'it'];
+const QLEVER = process.env.QLEVER_API ?? 'https://qlever.cs.uni-freiburg.de/api/osm-planet';
 const WIKIDATA_SPARQL = process.env.WIKIDATA_SPARQL ?? 'https://query.wikidata.org/sparql';
-// Ab diesem Anteil fehlgeschlagener Wikidata-Abfragen gilt ein Block als unvollständig (nächster Lauf holt ihn neu)
-const MIN_RESOLVED = 0.9;
+const BUDGET_MS = Number(process.env.PEAKS_BUDGET_MIN ?? 40) * 60_000;
+const OSM_MAX_AGE_DAYS = 7;
+const LANGS = ['de', 'en', 'fr', 'it'];
 const HEADERS = { 'User-Agent': 'ridge-lens-build (github.com/jibes/ridge-lens)' };
 const OUT = new URL('../public/peaks/', import.meta.url);
-const STATE = new URL('blocks.json', OUT);
 const started = Date.now();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const left = () => BUDGET_MS - (Date.now() - started);
+const readJson = async (name, fallback) => JSON.parse(await readFile(new URL(name, OUT), 'utf8').catch(() => 'null')) ?? fallback;
 
 function parseEle(raw) {
   if (!raw) return null;
@@ -46,42 +33,81 @@ function parseEle(raw) {
   return Number.isFinite(v) && v > -500 && v < 9000 ? Math.round(v) : null;
 }
 
-/** CSV für ein Rechteck der Kantenlänge `size`; null, wenn kein Server antwortet. */
-async function query(s, w, size) {
-  const fields = ['::id', '::lat', '::lon', 'ele', 'name', ...LANGS.map((l) => `"name:${l}"`), 'wikidata'].join(',');
-  const q = `[out:csv(${fields};false;"\\t")][timeout:90][bbox:${s},${w},${s + size},${w + size}];node["natural"="peak"]["name"];out qt;`;
-  for (const ep of ENDPOINTS) {
-    const timeout = Math.min(100_000, left());
-    if (timeout < 20_000) return null;
-    try {
-      const res = await fetch(ep, {
-        method: 'POST',
-        body: new URLSearchParams({ data: q }),
-        headers: HEADERS,
-        signal: AbortSignal.timeout(timeout),
-      });
-      const text = await res.text();
-      if (!res.ok || /<html|runtime error/i.test(text.slice(0, 500))) throw new Error(`HTTP ${res.status}`);
-      return text;
-    } catch (err) {
-      console.warn(`  ${new URL(ep).hostname}: ${err.name === 'TimeoutError' ? 'timeout' : err.message}`);
-    }
+/** Ein Feld der QLever-TSV-Ausgabe: <IRI>, "Literal"@lang / "Literal"^^<typ> oder leer. */
+export function parseTerm(t) {
+  if (!t) return '';
+  if (t.startsWith('<') && t.endsWith('>')) return t.slice(1, -1);
+  if (t.startsWith('"')) {
+    const end = t.lastIndexOf('"');
+    return t
+      .slice(1, end > 0 ? end : undefined)
+      .replace(/\\(.)/g, (_, c) => ({ t: '\t', n: '\n', r: '\r' })[c] ?? c);
   }
-  return null;
+  return t;
+}
+
+/** Zeilen aus der QLever-TSV-Ausgabe (Spalten wie in der SELECT-Klausel). */
+export function parseOsmTsv(text) {
+  const rows = new Map();
+  const lines = text.split('\n');
+  for (let i = 1; i < lines.length; i++) {
+    if (!lines[i]) continue;
+    const [node, wkt, ele, name, ...rest] = lines[i].split('\t').map(parseTerm);
+    const id = Number(/\/node\/(\d+)$/.exec(node)?.[1]);
+    const pt = /POINT\s*\(\s*(-?[\d.]+)\s+(-?[\d.]+)\s*\)/.exec(wkt);
+    if (!id || !pt || !name || rows.has(id)) continue;
+    const qid = /^Q\d+$/.test(rest[LANGS.length] ?? '') ? rest[LANGS.length] : '';
+    rows.set(id, { id, lat: Number(pt[2]), lon: Number(pt[1]), ele: parseEle(ele), name, names: LANGS.map((_, k) => rest[k] ?? ''), qid });
+  }
+  return [...rows.values()];
+}
+
+const PREFIXES = `PREFIX osmkey: <https://www.openstreetmap.org/wiki/Key:>
+PREFIX osmnode: <https://www.openstreetmap.org/node/>
+PREFIX geo: <http://www.opengis.net/ont/geosparql#>`;
+
+async function qlever(query, { tsv = true, timeoutMs = 20 * 60_000 } = {}) {
+  const res = await fetch(QLEVER, {
+    method: 'POST',
+    body: new URLSearchParams({ query, ...(tsv ? { action: 'tsv_export' } : {}), timeout: '1200s' }),
+    headers: { ...HEADERS, Accept: tsv ? 'text/tab-separated-values' : 'application/sparql-results+json' },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`QLever HTTP ${res.status}: ${text.slice(0, 300)}`);
+  return text;
+}
+
+/** Alle benannten Gipfel weltweit; bei leerem Ergebnis Schema-Diagnose ins Log. */
+async function fetchOsm() {
+  const opt = LANGS.map((l, k) => `OPTIONAL { ?node osmkey:name:${l} ?n${k} }`).join(' ');
+  const query = `${PREFIXES}
+SELECT ?node ?wkt ?ele ?name ${LANGS.map((_, k) => `?n${k}`).join(' ')} ?wd WHERE {
+  ?node osmkey:natural "peak" ; osmkey:name ?name ; geo:hasGeometry/geo:asWKT ?wkt .
+  OPTIONAL { ?node osmkey:ele ?ele } ${opt} OPTIONAL { ?node osmkey:wikidata ?wd }
+}`;
+  const t0 = Date.now();
+  const text = await qlever(query);
+  console.log(`QLever: ${(text.length / 1e6).toFixed(1)} MB in ${((Date.now() - t0) / 1000).toFixed(0)} s`);
+  console.log(text.split('\n').slice(0, 3).join('\n'));
+  const rows = parseOsmTsv(text);
+  if (rows.length < Number(process.env.PEAKS_MIN_ROWS ?? 100_000)) {
+    // Schema prüfen: alle Aussagen zum Matterhorn-Knoten
+    const probe = await qlever(`${PREFIXES}\nSELECT ?p ?o WHERE { osmnode:26863664 ?p ?o } LIMIT 60`).catch((e) => String(e));
+    console.log(`Diagnose Matterhorn-Knoten:\n${probe.slice(0, 4000)}`);
+    throw new Error(`nur ${rows.length} Gipfel – Abfrage oder Schema passt nicht, Datensatz bleibt unverändert`);
+  }
+  return rows;
 }
 
 /**
- * Bekanntheit je Wikidata-Id: Zahl der Sitelinks (Wikipedia-Sprachversionen plus
- * Wikivoyage/Commons) über den Query Service. `wikibase:sitelinks` ist vorberechnet,
- * die Abfrage daher schnell; eine je 400 Ids (die Einzel-API drosselt nach wenigen
- * hundert Anfragen). Nach drei Fehlschlägen in Folge Abbruch für diesen Block.
- * Bei Fehlern fehlt die Id in der Map.
+ * Bekanntheit je Wikidata-Id: Zahl der Sitelinks (vorberechnet als wikibase:sitelinks),
+ * 400 Ids je Abfrage; nach drei Fehlschlägen in Folge Abbruch (nächster Lauf macht weiter).
  */
-async function sitelinkCounts(ids) {
-  const out = new Map();
+async function sitelinkCounts(ids, onBatch) {
   let failures = 0;
   for (let i = 0; i < ids.length && failures < 3; i += 400) {
-    if (left() < 60_000) break;
+    if (left() < 90_000) break;
     const values = ids.slice(i, i + 400).map((q) => `wd:${q}`).join(' ');
     const query = `SELECT ?item ?n WHERE { VALUES ?item { ${values} } ?item wikibase:sitelinks ?n }`;
     let ok = false;
@@ -101,118 +127,88 @@ async function sitelinkCounts(ids) {
         }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const body = await res.json();
-        for (const b of body.results.bindings) out.set(b.item.value.replace(/^.*\//, ''), Number(b.n.value));
+        const batch = new Map(body.results.bindings.map((b) => [b.item.value.replace(/^.*\//, ''), Number(b.n.value)]));
+        // Ids ohne Treffer (gelöscht/umgeleitet) als 1 merken, sonst würden sie endlos neu abgefragt
+        for (const q of ids.slice(i, i + 400)) if (!batch.has(q)) batch.set(q, 1);
+        await onBatch(batch);
         ok = true;
       } catch (err) {
         console.warn(`  wikidata: ${err.name === 'TimeoutError' ? 'timeout' : err.message}`);
       }
     }
     failures = ok ? 0 : failures + 1;
-    await sleep(1000);
+    await sleep(500);
   }
-  return out;
 }
 
-/** Zeilen eines Blocks nach 1°-Kacheln; Grenzpunkte gehören nur zur Kachel im Block. */
-async function toTiles(text, s, w) {
-  const tiles = new Map();
-  const wikidata = new Map();
-  for (const line of text.split('\n')) {
-    const [id, lat, lon, ele, name, ...rest] = line.split('\t');
-    if (!name || !lat || !lon) continue;
-    const la = Number(lat);
-    const lo = Number(lon);
-    if (la < s || la >= s + BLOCK || lo < w || lo >= w + BLOCK) continue;
-    const key = `${Math.floor(la)}_${Math.floor(lo)}`;
-    if (!tiles.has(key)) tiles.set(key, new Map());
-    const row = [Number(id), +la.toFixed(5), +lo.toFixed(5), parseEle(ele), name, ...LANGS.map((_, i) => rest[i] ?? ''), 0];
-    const qid = rest[LANGS.length]?.trim();
-    if (qid) wikidata.set(row, qid);
-    tiles.get(key).set(id, row);
+/** Bisherige Gipfel aus den Kacheln (für Läufe ohne neue OSM-Abfrage). */
+async function rowsFromTiles() {
+  const rows = [];
+  for (const f of await readdir(OUT)) {
+    if (!/^-?\d+_-?\d+\.json$/.test(f)) continue;
+    for (const r of JSON.parse(await readFile(new URL(f, OUT), 'utf8'))) {
+      rows.push({ id: r[0], lat: r[1], lon: r[2], ele: r[3], name: r[4], names: r.slice(5, 9), qid: r[10] ?? '' });
+    }
   }
-  // Ungültige Ids (Tippfehler, Listen) würden eine ganze Wikidata-Abfrage scheitern lassen
-  const ids = [...new Set([...wikidata.values()].filter((q) => /^Q\d+$/.test(q)))];
-  const counts = await sitelinkCounts(ids);
-  for (const [row, qid] of wikidata) row[row.length - 1] = counts.get(qid) ?? 1;
-  console.log(`  wikidata: ${counts.size}/${ids.length} ids resolved`);
-  return { tiles, complete: counts.size >= MIN_RESOLVED * ids.length };
-}
-
-async function writeIndex(state) {
-  const tiles = (await readdir(OUT)).filter((f) => /^-?\d+_-?\d+\.json$/.test(f)).map((f) => f.slice(0, -5));
-  await writeFile(STATE, JSON.stringify(state));
-  await writeFile(
-    new URL('index.json', OUT),
-    JSON.stringify({ generated: new Date().toISOString(), region: REGION, blockSize: BLOCK, blocks: Object.keys(state).sort(), tiles: tiles.sort() }),
-  );
+  return rows;
 }
 
 await mkdir(OUT, { recursive: true });
-const state = JSON.parse(await readFile(STATE, 'utf8').catch(() => '{}'));
+const meta = await readJson('meta.json', {});
+const index = await readJson('index.json', null);
+const fame = await readJson('fame.json', {});
+const osmAge = meta.osm ? (Date.now() - Date.parse(meta.osm)) / 86_400_000 : Infinity;
 
-const blocks = [];
-for (let s = REGION.south; s < REGION.north; s += BLOCK) {
-  for (let w = REGION.west; w < REGION.east; w += BLOCK) blocks.push([s, w]);
-}
-const age = (key) => {
-  if (!state[key]) return Infinity;
-  const t = Date.parse(state[key]);
-  return t < FORMAT_SINCE ? Infinity : (Date.now() - t) / 86_400_000;
-};
-const dist = ([s, w]) => Math.hypot(s + BLOCK / 2 - CENTER.lat, (w + BLOCK / 2 - CENTER.lon) * 0.7);
-/**
- * CSV eines 2°-Blocks. Dichte Blöcke laufen bei überlasteten Servern ins Timeout;
- * dann in vier 1°-Teilabfragen zerlegen. Null, wenn ein Teil fehlt.
- */
-async function fetchBlock(s, w) {
-  const whole = await query(s, w, BLOCK);
-  if (whole !== null) return whole;
-  console.warn(`block ${s},${w}: splitting into 1° parts`);
-  const parts = [];
-  for (let la = s; la < s + BLOCK; la++) {
-    for (let lo = w; lo < w + BLOCK; lo++) {
-      const part = await query(la, lo, 1);
-      if (part === null) return null;
-      parts.push(part);
-      await sleep(PAUSE_MS);
-    }
-  }
-  return parts.join('\n');
+let rows;
+if (index?.coverage !== 'global' || osmAge > OSM_MAX_AGE_DAYS || process.env.PEAKS_FORCE_OSM) {
+  rows = await fetchOsm();
+  meta.osm = new Date().toISOString();
+} else {
+  rows = await rowsFromTiles();
+  console.log(`OSM-Stand vom ${meta.osm} (${osmAge.toFixed(1)} Tage), ${rows.length} Gipfel aus den Kacheln`);
 }
 
-const todo = blocks
-  .filter(([s, w]) => age(`${s}_${w}`) > MAX_AGE_DAYS)
-  // fehlende und im alten Format zuerst, dann älteste; innerhalb davon von der Mitte nach außen
-  .sort((a, b) => Number(isFinite(age(`${a[0]}_${a[1]}`))) - Number(isFinite(age(`${b[0]}_${b[1]}`))) || dist(a) - dist(b));
+// Bekanntheit ergänzen, Zwischenstand nach jeder Abfrage sichern
+const missing = [...new Set(rows.map((r) => r.qid).filter((q) => q && !(q in fame)))];
+const withQid = new Set(rows.map((r) => r.qid).filter(Boolean)).size;
+console.log(`${rows.length} Gipfel, ${withQid} mit Wikidata, davon ${missing.length} ohne Bekanntheit`);
+let resolved = 0;
+await sitelinkCounts(missing, async (batch) => {
+  for (const [q, n] of batch) fame[q] = n;
+  resolved += batch.size;
+  await writeFile(new URL('fame.json', OUT), JSON.stringify(fame));
+});
+console.log(`  wikidata: ${resolved}/${missing.length} ergänzt`);
 
-console.log(`${blocks.length - todo.length}/${blocks.length} blocks current, ${todo.length} to fetch`);
-let fetched = 0;
-for (const [s, w] of todo) {
-  if (left() < 30_000) break;
-  const text = await fetchBlock(s, w);
-  if (text === null) {
-    console.warn(`block ${s},${w}: skipped`);
-    await sleep(5_000);
-    continue;
-  }
-  const { tiles, complete } = await toTiles(text, s, w);
-  let count = 0;
-  // alle 1°-Kacheln des Blocks neu schreiben (auch leere, damit veraltete verschwinden)
-  for (let la = s; la < s + BLOCK; la++) {
-    for (let lo = w; lo < w + BLOCK; lo++) {
-      const rows = [...(tiles.get(`${la}_${lo}`)?.values() ?? [])];
-      count += rows.length;
-      await writeFile(new URL(`${la}_${lo}.json`, OUT), JSON.stringify(rows));
-    }
-  }
-  // Unvollständige Bekanntheit: Block bleibt nutzbar, gilt aber als veraltet und wird neu geholt
-  state[`${s}_${w}`] = complete ? new Date().toISOString() : new Date(FORMAT_SINCE - 1).toISOString();
-  await writeIndex(state);
-  fetched++;
-  console.log(`block ${s},${w}: ${count} peaks`);
-  await sleep(PAUSE_MS); // Overpass schonen
+// Kacheln schreiben (nur geänderte), verwaiste entfernen
+const tiles = new Map();
+for (const r of rows) {
+  const key = `${Math.floor(r.lat)}_${Math.floor(r.lon)}`;
+  if (!tiles.has(key)) tiles.set(key, []);
+  const row = [r.id, +r.lat.toFixed(5), +r.lon.toFixed(5), r.ele, r.name, ...r.names, r.qid ? (fame[r.qid] ?? 1) : 0];
+  if (r.qid) row.push(r.qid);
+  tiles.get(key).push(row);
 }
-// Index nur bei Änderungen neu schreiben (Zeitstempel), damit unveränderte Läufe nichts veröffentlichen
-if (fetched > 0) await writeIndex(state);
-const done = blocks.filter(([s, w]) => state[`${s}_${w}`]).length;
-console.log(`fetched ${fetched} blocks; ${done}/${blocks.length} available`);
+let changed = 0;
+for (const [key, list] of tiles) {
+  list.sort((a, b) => a[0] - b[0]);
+  const json = JSON.stringify(list);
+  const file = new URL(`${key}.json`, OUT);
+  if ((await readFile(file, 'utf8').catch(() => '')) === json) continue;
+  await writeFile(file, json);
+  changed++;
+}
+for (const f of await readdir(OUT)) {
+  const tile = /^(-?\d+_-?\d+)\.json$/.exec(f)?.[1];
+  if ((tile && !tiles.has(tile)) || f === 'blocks.json') {
+    await rm(new URL(f, OUT));
+    changed++;
+  }
+}
+const keys = [...tiles.keys()].sort();
+const sameTiles = index?.coverage === 'global' && JSON.stringify(index.tiles) === JSON.stringify(keys);
+if (changed || !sameTiles || index?.osm !== meta.osm) {
+  await writeFile(new URL('index.json', OUT), JSON.stringify({ generated: new Date().toISOString(), coverage: 'global', osm: meta.osm, tiles: keys }));
+  await writeFile(new URL('meta.json', OUT), JSON.stringify(meta));
+}
+console.log(`${keys.length} Kacheln, ${changed} geändert; Bekanntheit fehlt noch für ${missing.length - resolved} Ids`);

@@ -34,6 +34,8 @@ jobs:
       - run: npm test
       # Gipfel-Datensatz kommt fertig vom Branch peaks-data (siehe peaks.yml)
       - run: scripts/restore-peaks.sh public/peaks
+      # Zwischenspeicher der Bekanntheit braucht nur der Build
+      - run: rm -f public/peaks/fame.json
       - run: npm run build
       - uses: actions/upload-pages-artifact@v3
         with:

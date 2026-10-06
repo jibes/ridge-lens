@@ -50,8 +50,8 @@ export function parseOverpassCsv(text: string): PeakRaw[] {
   return out;
 }
 
-/** Zeile im mitgelieferten Datensatz: [id, lat, lon, ele|null, name, de, en, fr, it, fame] (fame fehlt in älteren Kacheln). */
-export type PeakRow = [number, number, number, number | null, string, string, string, string, string, number?];
+/** Zeile im mitgelieferten Datensatz: [id, lat, lon, ele|null, name, de, en, fr, it, fame, wikidata] (fame/wikidata optional). */
+export type PeakRow = [number, number, number, number | null, string, string, string, string, string, number?, string?];
 
 export function rowsToPeaks(rows: PeakRow[]): PeakRaw[] {
   return rows.map(([id, lat, lon, ele, name, de, en, fr, it, fame]) => {
@@ -87,10 +87,13 @@ export function tilesFor(center: LatLon, radius: number): { lat: number; lon: nu
 }
 
 interface DatasetIndex {
-  region: { south: number; north: number; west: number; east: number };
-  /** Kantenlänge der Abfrageblöcke (°); `blocks` = fertig geladene Blöcke "süd_west". */
-  blockSize: number;
-  blocks: string[];
+  /** "global": alle Kacheln weltweit enthalten (fehlende = keine Gipfel). */
+  coverage?: 'global';
+  /** Ältere, regionale Datensätze: Gebiet und fertig geladene Blöcke "süd_west". */
+  region?: { south: number; north: number; west: number; east: number };
+  blockSize?: number;
+  blocks?: string[];
+  /** Kacheln mit Gipfeln. */
   tiles: string[];
 }
 
@@ -116,7 +119,9 @@ async function loadIndex(base: URL): Promise<DatasetIndex | null> {
 /** Ob die Kachel im mitgelieferten Datensatz vollständig vorliegt. */
 function bundledCovers(index: DatasetIndex | null, lat: number, lon: number): boolean {
   if (!index) return false;
+  if (index.coverage === 'global') return true;
   const r = index.region;
+  if (!r || !index.blockSize || !index.blocks) return false;
   if (lat < r.south || lat >= r.north || lon < r.west || lon >= r.east) return false;
   const B = index.blockSize;
   const bs = r.south + Math.floor((lat - r.south) / B) * B;
@@ -161,13 +166,14 @@ export async function* loadPeakTiles(center: LatLon, radius: number): AsyncGener
   const dir = '../peaks/';
   const base = new URL(dir, import.meta.url);
   const index = await loadIndex(base);
+  const tileSet = new Set(index?.tiles ?? []);
   const cache = await caches.open(CACHE_NAME).catch(() => null);
   let lastNetwork = 0;
   for (const { lat, lon } of tilesFor(center, radius)) {
     const key = `${lat}_${lon}`;
     if (bundledCovers(index, lat, lon)) {
       // Leere Kacheln (Meer, Flachland) stehen nicht im Index
-      if (!index!.tiles.includes(key)) {
+      if (!tileSet.has(key)) {
         yield { key, peaks: [], source: 'bundled' };
         continue;
       }

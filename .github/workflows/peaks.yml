@@ -1,8 +1,8 @@
 name: Build peak dataset
 
-# Gipfel-Datensatz (OSM via Overpass) unabhängig vom Deploy erzeugen. Der Stand liegt
-# auf dem Branch peaks-data (ein einzelner Commit, Historie wächst nicht); jeder Lauf
-# holt fehlende und > 30 Tage alte Blöcke im Zeitbudget nach.
+# Gipfel-Datensatz weltweit (OSM via QLever, Bekanntheit via Wikidata) unabhängig vom
+# Deploy erzeugen. Der Stand liegt auf dem Branch peaks-data (ein einzelner Commit,
+# Historie wächst nicht); OSM wöchentlich neu, fehlende Bekanntheit je Lauf im Zeitbudget.
 on:
   schedule:
     # alle 4 Stunden; ohne fällige Blöcke endet ein Lauf nach Sekunden ohne Veröffentlichung
@@ -25,7 +25,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -35,9 +35,9 @@ jobs:
         run: |
           scripts/restore-peaks.sh public/peaks
           sha1sum public/peaks/index.json > "$RUNNER_TEMP/index.sha" 2>/dev/null || true
-      - name: Fetch missing and outdated blocks
+      - name: Fetch peaks and fame
         env:
-          PEAKS_BUDGET_MIN: 20
+          PEAKS_BUDGET_MIN: 45
         run: node scripts/build-peaks.mjs
       - name: Publish to branch peaks-data
         working-directory: public/peaks
@@ -53,4 +53,4 @@ jobs:
           git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
             commit -qm "Gipfel-Datensatz $(date -u +%FT%RZ)"
           git push -qf "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" peaks-data
-          echo "Veröffentlicht: $(jq '.blocks | length' index.json) Blöcke"
+          echo "Veröffentlicht: $(jq '.tiles | length' index.json) Kacheln"
