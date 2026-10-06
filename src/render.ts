@@ -591,7 +591,9 @@ function drawPeaks(
     l.peak.id === opts.selectedPeakId || l.peak.id === opts.targetPeakId ? 2 : l.peak.visible ? 1 : 0;
   cands.sort((a, b) => rank(b) - rank(a) || labelScore(b.peak) - labelScore(a.peak));
   const placed: PlacedLabel[] = [];
-  const minGap = 18;
+  // Nachts weniger, blassere und tief am Grat sitzende Labels, damit der Himmel frei bleibt
+  const nf = opts.night?.fade ?? 0;
+  const minGap = 18 + 22 * nf;
   for (const c of cands) {
     if (placed.every((p) => Math.abs(p.x - c.x) >= minGap)) placed.push(c);
   }
@@ -610,7 +612,9 @@ function drawPeaks(
     const wMeta = ctx.measureText(meta).width;
     const len = wName + 6 + wMeta;
     // Text oben bündig (liest von unten nach oben); Leitlinie vom Gipfel bis zum Textende
-    const top = Math.max(labelTop + 10, Math.min(y - 10, labelTop + len + 4));
+    const dayTop = Math.max(labelTop + 10, Math.min(y - 10, labelTop + len + 4));
+    const top = dayTop + (Math.max(dayTop, y - 14) - dayTop) * nf;
+    ctx.globalAlpha = selected ? 1 : 1 - 0.45 * nf;
     ctx.strokeStyle = selected ? pal.accent : peak.visible ? pal.leader : pal.hidden;
     ctx.lineWidth = selected ? 1.5 : 1;
     ctx.beginPath();
@@ -638,6 +642,7 @@ function drawPeaks(
     ctx.fillText(meta, wName + 6, 0.5);
     ctx.restore();
   }
+  ctx.globalAlpha = 1;
   return placed;
 }
 

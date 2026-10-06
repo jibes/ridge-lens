@@ -52,7 +52,7 @@ Automatischer Abgleich: Findet sich keine brauchbare Silhouette, dient die Sonne
 
 ## Sterne, Sternbilder, Planeten
 
-Mit der Dämmerung (Sonne unter −4°, voll ab −14°) erscheinen Sterne bis 5,5 mag (Größe/Farbe nach Helligkeit und B−V), Sternbildlinien und -namen in der UI-Sprache, die hellsten Sternnamen und die Planeten Merkur–Saturn – hinter dem Gelände verdeckt. Bei hellem System wechselt die Darstellung nachts ins dunkle Schema. Planeten und helle Sterne lassen sich antippen (Höhe, Helligkeit) und zum Ausrichten des Kompasses verwenden.
+Mit der Dämmerung (Sonne unter −4°, voll ab −14°) erscheinen Sterne bis 5,5 mag (Größe/Farbe nach Helligkeit und B−V), Sternbildlinien und -namen in der UI-Sprache, die hellsten Sternnamen und die Planeten Merkur–Saturn – hinter dem Gelände verdeckt. Bei hellem System wechselt die Darstellung nachts ins dunkle Schema; Gipfelnamen werden ausgedünnt, blasser und sitzen direkt am Grat, damit der Himmel frei bleibt. Planeten und helle Sterne lassen sich antippen (Höhe, Helligkeit) und zum Ausrichten des Kompasses verwenden.
 
 In den Einstellungen lässt sich der **Zeitpunkt** wählen (gilt auch für Sonne/Mond und Auf-/Untergänge), z. B. „Wo steht die Milchstraße um 23 Uhr über dem Grat?“.
 
