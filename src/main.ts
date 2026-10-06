@@ -32,6 +32,8 @@ const PRESETS: Preset[] = [
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const form = $<HTMLFormElement>('form');
+// Ungültige Koordinaten sitzen im eingeklappten Bereich: aufklappen, damit der Browser sie zeigen kann
+form.addEventListener('invalid', () => ($<HTMLDetailsElement>('manual').open = true), true);
 const latIn = $<HTMLInputElement>('lat');
 const lonIn = $<HTMLInputElement>('lon');
 const eleIn = $<HTMLInputElement>('ele');

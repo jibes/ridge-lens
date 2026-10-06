@@ -431,9 +431,43 @@ input[type='checkbox'] {
   height: 18px;
   accent-color: var(--accent);
 }
-label.lang,
-#auto-align-row {
+label.lang {
   margin-top: 12px;
+}
+h3.group {
+  margin: 22px 0 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.sheet-head + h3.group {
+  margin-top: 4px;
+  padding-top: 0;
+  border-top: 0;
+}
+details.more {
+  margin-top: 12px;
+}
+details.more summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+}
+details.more .grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 12px;
+  margin-top: 10px;
+}
+details.more .help:first-of-type {
+  margin-top: 8px;
+}
+form details.more {
+  margin-top: 0;
 }
 .row {
   display: flex;

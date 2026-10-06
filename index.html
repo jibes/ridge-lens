@@ -83,19 +83,44 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
           </button>
         </div>
+        <h3 class="group" data-i18n="settings.groupPlace"></h3>
         <form id="form">
           <label class="wide"><span data-i18n="settings.place"></span>
             <select id="preset">
               <option value="" data-i18n="settings.ownPlace"></option>
             </select>
           </label>
-          <label><span data-i18n="settings.lat"></span> <input id="lat" type="number" step="any" inputmode="decimal" required /></label>
-          <label><span data-i18n="settings.lon"></span> <input id="lon" type="number" step="any" inputmode="decimal" required /></label>
-          <label><span data-i18n="settings.ele"></span> <input id="ele" type="number" step="any" inputmode="numeric" data-i18n-placeholder="auto" /></label>
-          <label><span data-i18n="settings.radius"></span> <input id="radius" type="number" min="10" max="250" step="10" inputmode="numeric" value="100" /></label>
+          <details class="wide more" id="manual">
+            <summary data-i18n="settings.manual"></summary>
+            <div class="grid">
+              <label><span data-i18n="settings.lat"></span> <input id="lat" type="number" step="any" inputmode="decimal" required /></label>
+              <label><span data-i18n="settings.lon"></span> <input id="lon" type="number" step="any" inputmode="decimal" required /></label>
+              <label><span data-i18n="settings.ele"></span> <input id="ele" type="number" step="any" inputmode="numeric" data-i18n-placeholder="auto" /></label>
+              <label><span data-i18n="settings.radius"></span> <input id="radius" type="number" min="10" max="250" step="10" inputmode="numeric" value="100" /></label>
+            </div>
+          </details>
           <label class="check wide"><input id="hidden" type="checkbox" /> <span data-i18n="settings.hidden"></span></label>
           <button type="submit" class="primary wide" data-i18n="settings.compute"></button>
         </form>
+
+        <h3 class="group" data-i18n="settings.groupCamera"></h3>
+        <label class="check" id="auto-align-row"><input id="auto-align" type="checkbox" checked /> <span data-i18n="settings.autoAlign"></span></label>
+        <label class="lang" hidden><span data-i18n="settings.camera"></span><select id="camera-select"></select></label>
+        <div class="row" id="camera-fov-row" hidden>
+          <span class="help" id="camera-fov"></span>
+          <button type="button" id="camera-fov-reset" data-i18n="settings.resetCameraFov"></button>
+        </div>
+        <div class="row">
+          <button type="button" id="offset-reset" data-i18n="settings.resetOffset"></button>
+        </div>
+        <details class="more">
+          <summary data-i18n="settings.details"></summary>
+          <p class="help" data-i18n="settings.help"></p>
+          <p class="help" id="declination" hidden></p>
+          <p class="help" id="sensor-noise" hidden></p>
+        </details>
+
+        <h3 class="group" data-i18n="settings.groupDisplay"></h3>
         <label class="lang"><span data-i18n="settings.language"></span>
           <select id="lang">
             <option value="auto" data-i18n="settings.langAuto"></option>
@@ -108,19 +133,9 @@
         <label class="lang"><span data-i18n="sky.time"></span>
           <span class="time-row"><input id="sky-time" type="datetime-local" /><button type="button" id="sky-now" data-i18n="sky.now"></button></span>
         </label>
-        <div class="row">
-          <button type="button" id="offset-reset" data-i18n="settings.resetOffset"></button>
-          <button type="button" id="install" hidden data-i18n="settings.install"></button>
-        </div>
-        <p class="help" data-i18n="settings.help"></p>
-        <p class="help" id="declination" hidden></p>
         <p class="help" id="sky-info" hidden></p>
-        <p class="help" id="sensor-noise" hidden></p>
-        <label class="check" id="auto-align-row"><input id="auto-align" type="checkbox" checked /> <span data-i18n="settings.autoAlign"></span></label>
-        <label class="lang" hidden><span data-i18n="settings.camera"></span><select id="camera-select"></select></label>
-        <div class="row" id="camera-fov-row" hidden>
-          <span class="help" id="camera-fov"></span>
-          <button type="button" id="camera-fov-reset" data-i18n="settings.resetCameraFov"></button>
+        <div class="row">
+          <button type="button" id="install" hidden data-i18n="settings.install"></button>
         </div>
         <p class="credits">
           <span data-i18n="credits.elevation"></span>: <a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md" target="_blank" rel="noopener">AWS Terrain Tiles</a> ·
