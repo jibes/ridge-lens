@@ -1,4 +1,4 @@
-// Gipfel-Datensatz weltweit: alle benannten OSM-Gipfel (natural=peak) als 1°-Kacheln nach
+// Gipfel-Datensatz weltweit: alle benannten OSM-Gipfel und Vulkane (natural=peak, volcano) als 1°-Kacheln nach
 // public/peaks/. Quelle ist ein Auszug aus der OSM-Weltdatei, den der Workflow mit osmium
 // erzeugt (PEAKS_OSM_GEOJSONSEQ, siehe peaks.yml; monatlich). Die Bekanntheit (Wikidata-
 // Sitelinks) kommt vom Wikidata Query Service und wird in fame.json zwischengespeichert;

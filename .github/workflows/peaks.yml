@@ -75,7 +75,7 @@ jobs:
           # Als Datenstrom filtern (die ~80 GB werden nie gespeichert); nur Knoten, ohne Referenzen
           start=$(date +%s)
           curl -sfL --retry 3 -A 'ridge-lens-build (github.com/jibes/ridge-lens)' "$url" \
-            | osmium tags-filter -F pbf -R - n/natural=peak -o "$RUNNER_TEMP/peaks.osm.pbf"
+            | osmium tags-filter -F pbf -R - n/natural=peak,volcano -o "$RUNNER_TEMP/peaks.osm.pbf"
           echo "Gefiltert in $(( ($(date +%s) - start) / 60 )) min: $(du -h "$RUNNER_TEMP/peaks.osm.pbf" | cut -f1)"
           osmium export "$RUNNER_TEMP/peaks.osm.pbf" -f geojsonseq --add-unique-id=type_id -o "$RUNNER_TEMP/peaks.geojsonseq"
           echo "PEAKS_OSM_GEOJSONSEQ=$RUNNER_TEMP/peaks.geojsonseq" >> "$GITHUB_ENV"

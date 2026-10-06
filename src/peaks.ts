@@ -20,7 +20,7 @@ const ENDPOINTS = [
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
 ];
-const CACHE_NAME = 'ridge-lens-peaks-v5';
+const CACHE_NAME = 'ridge-lens-peaks-v6';
 const NAME_LANGS: Lang[] = ['de', 'en', 'fr', 'it'];
 const TIMEOUT_MS = 30_000;
 
@@ -134,7 +134,7 @@ async function fetchOverpassTile(lat: number, lon: number): Promise<PeakRaw[]> {
   const query =
     `[out:csv(::id,::lat,::lon,ele,name,${NAME_LANGS.map((l) => `"name:${l}"`).join(',')},wikidata;false;"\t")]` +
     `[timeout:60][bbox:${lat},${lon},${lat + 1},${lon + 1}];` +
-    `node["natural"="peak"]["name"];out qt;`;
+    `node["natural"~"^(peak|volcano)$"]["name"];out qt;`;
   const qs = `?data=${encodeURIComponent(query)}`;
   const errors: string[] = [];
   for (const ep of ENDPOINTS) {
