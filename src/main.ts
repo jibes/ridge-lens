@@ -231,6 +231,8 @@ function render() {
   labels = renderView(viewCtx, cam, pano, {
     palette,
     showHidden: hiddenIn.checked,
+    showTerrain: showTerrainIn.checked,
+    showSky: showSkyIn.checked,
     // Fadenkreuz nur zum manuellen Kalibrieren (Gipfel anpeilen, übernehmen)
     crosshair: sensorOn && manualCal,
     selectedPeakId: selected?.id ?? null,
@@ -418,6 +420,33 @@ presetSel.addEventListener('change', () => {
 });
 for (const el of [latIn, lonIn, eleIn]) el.addEventListener('input', () => (presetSel.value = ''));
 hiddenIn.addEventListener('change', requestRender);
+
+/** Ebenen ein-/ausblenden (der Bildabgleich nutzt sie weiter). */
+const showTerrainIn = $<HTMLInputElement>('show-terrain');
+const showSkyIn = $<HTMLInputElement>('show-sky');
+for (const [el, key] of [
+  [showTerrainIn, 'ridge-lens-show-terrain'],
+  [showSkyIn, 'ridge-lens-show-sky'],
+] as const) {
+  try {
+    el.checked = localStorage.getItem(key) !== 'off';
+  } catch {
+    /* kein Speicher */
+  }
+  el.addEventListener('change', () => {
+    try {
+      localStorage.setItem(key, el.checked ? 'on' : 'off');
+    } catch {
+      /* kein Speicher */
+    }
+    if (!el.checked) {
+      if (el === showTerrainIn) selected = null;
+      else selectedSky = null;
+      updateAlignBar();
+    }
+    requestRender();
+  });
+}
 
 /** Standort per GPS in die Eingabefelder; liefert Fehlertext oder null. */
 function locate(): Promise<Text | null> {
@@ -658,7 +687,6 @@ function updateSky() {
     { kind: 'sun', az: sun.az, alt: sun.alt, path: bodyPath(sunPosition, lat, lon, start, end, 10) },
     { kind: 'moon', az: moon.az, alt: moon.alt, fraction: moon.fraction, sunAz: sun.az, sunAlt: sun.alt, path: bodyPath(moonPosition, lat, lon, start, end, 10) },
   ];
-  skyNow = now.getTime();
   const p = pano;
   const horizonAt = (az: number) => (p ? p.horizon[Math.round(az / p.azStep) % p.horizon.length] : 0);
   skyEvents = {
@@ -704,6 +732,7 @@ window.setInterval(() => {
 
 /** Antippbare Himmelsobjekte über dem Gelände: Sonne, Mond, nachts Planeten und helle Sterne. */
 function tappableSky(): { key: string; name: string; az: number; alt: number; details: string }[] {
+  if (!showSkyIn.checked) return [];
   const out: { key: string; name: string; az: number; alt: number; details: string }[] = sky.map((b) => ({ key: b.kind, name: t(b.kind === 'sun' ? 'sky.sun' : 'sky.moon'), az: b.az, alt: b.alt, details: bodyDetails(b) }));
   if (night && night.fade > 0) {
     for (const o of night.objects) {
@@ -733,17 +762,15 @@ $<HTMLButtonElement>('sky-now').addEventListener('click', () => {
   updateSky();
 });
 
-/** Zeitpunkt, für den `sky` berechnet wurde. */
-let skyNow = Date.now();
 
 /**
  * Bahnen zum Zeichnen: ohne gewählte Zeit nur der Rest des Tages (vergangene Stunden
  * würden z. B. abends die Morgenbahn quer über den Osthimmel legen); ganze Bahn bei
  * gewählter Zeit oder wenn Sonne/Mond angetippt ist.
  */
+/** Sonne und Mond mit voller Tagesbahn (über dem Gelände). */
 function visibleSky(): SkyBody[] {
-  if (skyTime !== null) return sky;
-  return sky.map((b) => (b.kind === selectedSky ? b : { ...b, path: b.path.filter((p) => p.t >= skyNow - 10 * 60_000) }));
+  return sky;
 }
 
 function fmtTime(t: number | null): string {

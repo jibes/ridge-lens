@@ -95,6 +95,10 @@ function mix(a: RGB, b: RGB, t: number): string {
 export interface RenderOptions {
   palette: Palette;
   showHidden: boolean;
+  /** Kammlinien und Gipfelnamen zeichnen. */
+  showTerrain: boolean;
+  /** Sterne, Sternbilder, Planeten, Sonne und Mond samt Bahnen zeichnen. */
+  showSky: boolean;
   /** Fadenkreuz in Bildmitte (Sensormodus). */
   crosshair: boolean;
   selectedPeakId: number | null;
@@ -148,9 +152,11 @@ export function renderView(
   const proj = projector(cam);
   if (opts.overlay) {
     ctx.clearRect(0, 0, W, H);
-    if (opts.night) drawNight(ctx, cam, pano, opts.night, proj);
-    drawSky(ctx, cam, pano, opts.sky, proj, pal, opts.night?.fade ?? 0);
-    if (pano) {
+    if (opts.showSky) {
+      if (opts.night) drawNight(ctx, cam, pano, opts.night, proj);
+      drawSky(ctx, cam, pano, opts.sky, proj, pal, opts.night?.fade ?? 0);
+    }
+    if (pano && opts.showTerrain) {
       ctx.save();
       ctx.shadowColor = 'rgba(0,0,0,0.6)';
       ctx.shadowBlur = 3;
@@ -168,16 +174,18 @@ export function renderView(
       ctx.fillStyle = `rgba(5, 8, 16, ${0.9 * opts.night.fade})`;
       ctx.fillRect(0, 0, W, H);
     }
-    if (opts.night) drawNight(ctx, cam, pano, opts.night, proj);
-    drawSky(ctx, cam, pano, opts.sky, proj, pal, opts.night?.fade ?? 0);
+    if (opts.showSky) {
+      if (opts.night) drawNight(ctx, cam, pano, opts.night, proj);
+      drawSky(ctx, cam, pano, opts.sky, proj, pal, opts.night?.fade ?? 0);
+    }
     if (pano) {
       drawGround(ctx, cam, pano, proj, pal);
-      drawLines(ctx, cam, pano, proj, pal);
+      if (opts.showTerrain) drawLines(ctx, cam, pano, proj, pal);
     }
   }
   const scaleY = opts.topInset + 14;
   drawCompass(ctx, cam, proj, pal, scaleY, opts.compass);
-  const placed = pano ? drawPeaks(ctx, cam, pano, opts, proj, scaleY + 26) : [];
+  const placed = pano && opts.showTerrain ? drawPeaks(ctx, cam, pano, opts, proj, scaleY + 26) : [];
   if (opts.crosshair) drawCrosshair(ctx, cam, pal);
   const target = opts.targetPeakId === null ? undefined : pano?.peaks.find((p) => p.id === opts.targetPeakId);
   if (target) drawTarget(ctx, cam, target, proj, pal, scaleY + 26, opts.bottomInset);
