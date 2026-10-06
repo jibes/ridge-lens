@@ -16,7 +16,7 @@ const BLOCK = 2;
 const CENTER = { lat: 46.75, lon: 8.25 };
 const MAX_AGE_DAYS = 30;
 // Blöcke älter als das aktuelle Kachelformat (Bekanntheit ergänzt) gelten als veraltet
-const FORMAT_SINCE = Date.parse('2026-10-05T19:55:00Z');
+const FORMAT_SINCE = Date.parse('2026-10-06T14:00:00Z');
 const BUDGET_MS = Number(process.env.PEAKS_BUDGET_MIN ?? 20) * 60_000;
 const PAUSE_MS = Number(process.env.PEAKS_PAUSE_MS ?? 2_000);
 const ENDPOINTS = process.env.OVERPASS_ENDPOINTS?.split(',') ?? [
@@ -26,9 +26,9 @@ const ENDPOINTS = process.env.OVERPASS_ENDPOINTS?.split(',') ?? [
   'https://overpass.kumi.systems/api/interpreter',
 ];
 const LANGS = ['de', 'en', 'fr', 'it'];
-const WIKIDATA = process.env.WIKIDATA_API ?? 'https://www.wikidata.org/w/api.php';
-// Sitelinks, die keine Wikipedia-Sprachversion sind
-const NOT_WIKIPEDIA = new Set(['commonswiki', 'specieswiki', 'metawiki', 'wikidatawiki', 'mediawikiwiki', 'sourceswiki', 'outreachwiki', 'wikimaniawiki']);
+const WIKIDATA_SPARQL = process.env.WIKIDATA_SPARQL ?? 'https://query.wikidata.org/sparql';
+// Ab diesem Anteil fehlgeschlagener Wikidata-Abfragen gilt ein Block als unvollständig (nächster Lauf holt ihn neu)
+const MIN_RESOLVED = 0.9;
 const HEADERS = { 'User-Agent': 'ridge-lens-build (github.com/jibes/ridge-lens)' };
 const OUT = new URL('../public/peaks/', import.meta.url);
 const STATE = new URL('blocks.json', OUT);
@@ -70,24 +70,40 @@ async function query(s, w, size) {
   return null;
 }
 
-/** Zahl der Wikipedia-Sprachversionen je Wikidata-Id; bei Fehlern fehlt die Id in der Map. */
+/**
+ * Zahl der Wikipedia-Sprachversionen je Wikidata-Id über den Query Service: eine
+ * SPARQL-Abfrage je 800 Ids (die Einzel-API drosselt nach wenigen hundert Anfragen).
+ * Bei Fehlern fehlt die Id in der Map.
+ */
 async function sitelinkCounts(ids) {
   const out = new Map();
-  for (let i = 0; i < ids.length; i += 50) {
+  for (let i = 0; i < ids.length; i += 800) {
     if (left() < 60_000) break;
-    const batch = ids.slice(i, i + 50);
-    try {
-      const url = `${WIKIDATA}?action=wbgetentities&props=sitelinks&format=json&maxlag=5&ids=${batch.join('|')}`;
-      const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(30_000) });
-      const body = await res.json();
-      if (!res.ok || body.error) throw new Error(body.error?.code ?? `HTTP ${res.status}`);
-      for (const [id, e] of Object.entries(body.entities ?? {})) {
-        out.set(id, Object.keys(e.sitelinks ?? {}).filter((k) => k.endsWith('wiki') && !NOT_WIKIPEDIA.has(k)).length);
+    const values = ids.slice(i, i + 800).map((q) => `wd:${q}`).join(' ');
+    const query = `SELECT ?item (COUNT(?article) AS ?n) WHERE { VALUES ?item { ${values} } OPTIONAL { ?article schema:about ?item; schema:isPartOf ?site. ?site wikibase:wikiGroup "wikipedia". } } GROUP BY ?item`;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await fetch(WIKIDATA_SPARQL, {
+          method: 'POST',
+          body: new URLSearchParams({ query, format: 'json' }),
+          headers: { ...HEADERS, Accept: 'application/sparql-results+json' },
+          signal: AbortSignal.timeout(60_000),
+        });
+        if (res.status === 429 || res.status === 503) {
+          const wait = Math.min(60, Number(res.headers.get('retry-after')) || 10);
+          console.warn(`  wikidata: HTTP ${res.status}, warte ${wait} s`);
+          await sleep(wait * 1000);
+          continue;
+        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = await res.json();
+        for (const b of body.results.bindings) out.set(b.item.value.replace(/^.*\//, ''), Number(b.n.value));
+        break;
+      } catch (err) {
+        console.warn(`  wikidata: ${err.name === 'TimeoutError' ? 'timeout' : err.message}`);
       }
-    } catch (err) {
-      console.warn(`  wikidata: ${err.name === 'TimeoutError' ? 'timeout' : err.message}`);
     }
-    await sleep(200);
+    await sleep(1000);
   }
   return out;
 }
@@ -114,7 +130,7 @@ async function toTiles(text, s, w) {
   const counts = await sitelinkCounts(ids);
   for (const [row, qid] of wikidata) row[row.length - 1] = counts.get(qid) ?? 1;
   console.log(`  wikidata: ${counts.size}/${ids.length} ids resolved`);
-  return tiles;
+  return { tiles, complete: counts.size >= MIN_RESOLVED * ids.length };
 }
 
 async function writeIndex(state) {
@@ -174,7 +190,7 @@ for (const [s, w] of todo) {
     await sleep(5_000);
     continue;
   }
-  const tiles = await toTiles(text, s, w);
+  const { tiles, complete } = await toTiles(text, s, w);
   let count = 0;
   // alle 1°-Kacheln des Blocks neu schreiben (auch leere, damit veraltete verschwinden)
   for (let la = s; la < s + BLOCK; la++) {
@@ -184,7 +200,8 @@ for (const [s, w] of todo) {
       await writeFile(new URL(`${la}_${lo}.json`, OUT), JSON.stringify(rows));
     }
   }
-  state[`${s}_${w}`] = new Date().toISOString();
+  // Unvollständige Bekanntheit: Block bleibt nutzbar, gilt aber als veraltet und wird neu geholt
+  state[`${s}_${w}`] = complete ? new Date().toISOString() : new Date(FORMAT_SINCE - 1).toISOString();
   await writeIndex(state);
   fetched++;
   console.log(`block ${s},${w}: ${count} peaks`);
