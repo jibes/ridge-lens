@@ -104,6 +104,8 @@ export interface RenderOptions {
   selectedPeakId: number | null;
   /** Gesuchter Gipfel: hervorgehoben, außerhalb des Bilds zeigt ein Pfeil die Drehrichtung. */
   targetPeakId: number | null;
+  /** Ziel der Suche (Gipfel oder Himmelskörper) als Richtung; null = keins. */
+  target: { az: number; angle: number } | null;
   /** Unten freizuhaltender Bereich (px), z. B. Bedienleiste. */
   bottomInset: number;
   /** Freizuhaltender Bereich oben (px), z. B. für die Statuszeile. */
@@ -187,8 +189,7 @@ export function renderView(
   drawCompass(ctx, cam, proj, pal, scaleY, opts.compass);
   const placed = pano && opts.showTerrain ? drawPeaks(ctx, cam, pano, opts, proj, scaleY + 26) : [];
   if (opts.crosshair) drawCrosshair(ctx, cam, pal);
-  const target = opts.targetPeakId === null ? undefined : pano?.peaks.find((p) => p.id === opts.targetPeakId);
-  if (target) drawTarget(ctx, cam, target, proj, pal, scaleY + 26, opts.bottomInset);
+  if (opts.target) drawTarget(ctx, cam, opts.target, proj, pal, scaleY + 26, opts.bottomInset);
   return placed;
 }
 
@@ -509,7 +510,7 @@ export function turnToTarget(cam: Camera, az: number): number {
  * Ziel im Bild: Ring um den Gipfel. Außerhalb: Pfeil am Rand in Drehrichtung
  * (links/rechts, bzw. oben/unten wenn nur die Neigung fehlt) mit Gradzahl.
  */
-function drawTarget(ctx: CanvasRenderingContext2D, cam: Camera, peak: Peak, proj: Project, pal: Palette, top: number, bottomInset: number) {
+function drawTarget(ctx: CanvasRenderingContext2D, cam: Camera, peak: { az: number; angle: number }, proj: Project, pal: Palette, top: number, bottomInset: number) {
   const W = cam.width;
   const bottom = cam.height - bottomInset;
   const p = azimuthInView(cam, peak.az, 0) ? proj(peak.az, peak.angle) : null;

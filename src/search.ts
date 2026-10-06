@@ -13,6 +13,13 @@ export function fold(s: string): string {
   return s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
 }
 
+/** Beste Übereinstimmung eines Suchbegriffs (schon gefaltet) mit mehreren Namen. */
+export function nameScore(names: readonly (string | undefined)[], q: string): number {
+  let s = 0;
+  for (const n of names) if (n) s = Math.max(s, matchScore(n, q));
+  return s;
+}
+
 /** 3 = ganzer Name, 2 = Anfang, 1.5 = Wortanfang, 1 = irgendwo, 0 = kein Treffer. */
 function matchScore(name: string, q: string): number {
   const n = fold(name);
@@ -24,6 +31,11 @@ function matchScore(name: string, q: string): number {
 
 /** Beste Treffer: Übereinstimmung, dann Bekanntheit, sichtbar vor verdeckt, Höhe. */
 export function searchPeaks<P extends Searchable>(peaks: readonly P[], query: string, limit = 8): P[] {
+  return scorePeaks(peaks, query).slice(0, limit).map((h) => h.p);
+}
+
+/** Alle Treffer mit Übereinstimmung `s`, sortiert wie searchPeaks. */
+export function scorePeaks<P extends Searchable>(peaks: readonly P[], query: string): { p: P; s: number }[] {
   const q = fold(query.trim());
   if (!q) return [];
   const hits: { p: P; s: number }[] = [];
@@ -38,5 +50,5 @@ export function searchPeaks<P extends Searchable>(peaks: readonly P[], query: st
     }
   }
   hits.sort((a, b) => b.s - a.s || b.p.fame - a.p.fame || Number(b.p.visible) - Number(a.p.visible) || b.p.ele - a.p.ele);
-  return hits.slice(0, limit).map((h) => h.p);
+  return hits;
 }

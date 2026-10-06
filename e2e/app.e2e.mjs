@@ -118,6 +118,29 @@ try {
   await page.mouse.click(200, 300);
   check(await page.isHidden('#layers-menu'), 'Tippen daneben schließt das Menü');
 
+  // 3b. Suche nach Himmelskörpern nur bei eingeblendetem Himmel
+  const search = async (q) => {
+    await page.click('#search-open');
+    await page.fill('#search-input', q);
+    await page.waitForTimeout(200);
+    const items = await page.$$eval('#search-results button', (bs) => bs.map((b) => b.textContent));
+    await page.click('#search-close');
+    return items;
+  };
+  check(!(await search('Jupiter')).some((x) => /Planet/.test(x)), 'Himmel aus: Jupiter nicht in der Suche');
+  await page.click('#layers-open');
+  await page.click('#layer-sky');
+  await page.mouse.click(200, 300);
+  const mars = await search('Mars');
+  check(mars.some((x) => /Mars.*Planet/.test(x)), `Himmel an: Mars als Planet gefunden (${mars[0] ?? '–'})`);
+  await page.click('#search-open');
+  await page.fill('#search-input', 'Mond');
+  await page.waitForTimeout(200);
+  await page.click('#search-results button');
+  await page.waitForTimeout(300);
+  check(!(await page.isHidden('#target')), 'Mond als Ziel gewählt: Ziel-Chip sichtbar');
+  await page.click('#target-close');
+
   // 4. Manueller Modus zeigt bzw. verbirgt die Werkzeuge
   await page.click('#menu');
   check(await page.isHidden('#manual-tools'), 'Manuelle Werkzeuge standardmäßig verborgen');

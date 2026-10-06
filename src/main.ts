@@ -11,7 +11,7 @@ import type { BodyTarget, MatchResult, StarRef } from './vision';
 import { CAMERA, DARK, LIGHT, renderOverview, renderView, turnToTarget, type PlacedLabel, type SkyBody } from './render';
 import { bodyPath, moonPosition, sunPosition, terrainEvents } from './astro';
 import { buildNightSky, prepareSky, type NightSky, type PreparedSky, type SkyData } from './nightsky';
-import { searchPeaks } from './search';
+import { fold, nameScore, scorePeaks } from './search';
 import { skylineRelief } from './panorama';
 
 interface Preset {
@@ -91,6 +91,8 @@ let selected: Peak | null = null;
 let selectedSky: string | null = null;
 /** Gesuchter Gipfel (Id, bleibt über Neuberechnungen erhalten). */
 let targetId: number | null = null;
+/** Gesuchter Himmelskörper (Schlüssel wie 'sun', 'planet:mars', 'star:Sirius', 'con:Ori'). */
+let targetSky: string | null = null;
 
 // Sensormodus: Blick folgt dem Gerät; Ziehen/Anpeilen korrigiert den Kompass
 const tracker = new OrientationTracker(() => {
@@ -238,6 +240,7 @@ function render() {
     crosshair: sensorOn && manualCal,
     selectedPeakId: selected?.id ?? null,
     targetPeakId: targetId,
+    target: targetPoint(),
     bottomInset: view.getBoundingClientRect().bottom - (targetChip.hidden ? dockEl : targetChip).getBoundingClientRect().top + 8,
     peakName,
     compass: compassLabels(8),
@@ -249,7 +252,7 @@ function render() {
   });
   if (overview.clientWidth) {
     overCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const targetAz = targetId === null ? null : (pano?.peaks.find((p) => p.id === targetId)?.az ?? null);
+    const targetAz = targetPoint()?.az ?? null;
     renderOverview(overCtx, overview.clientWidth, overview.clientHeight, cam, pano, palette, compassLabels(8), targetAz);
   }
 }
@@ -750,7 +753,8 @@ function updateNight() {
   requestRender();
 }
 window.setInterval(() => {
-  if (night && night.fade > 0 && skyTime === null) updateNight();
+  // Auch tagsüber, solange ein Himmelskörper gesucht ist (Planeten, Sterne wandern)
+  if (((night && night.fade > 0) || targetSky !== null) && skyTime === null) updateNight();
 }, 10_000);
 
 /** Antippbare Himmelsobjekte über dem Gelände: Sonne, Mond, nachts Planeten und helle Sterne. */
@@ -872,24 +876,92 @@ searchInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') searchResults.querySelector('button')?.click();
 });
 
+/** Durchsuchbare Himmelskörper: Sonne, Mond, Planeten, benannte Sterne, Sternbilder. */
+interface SkyItem {
+  key: string;
+  name: string;
+  names: string[];
+  az: number;
+  alt: number;
+  kind: 'sun' | 'moon' | 'planet' | 'star' | 'constellation';
+  /** Rang bei gleicher Übereinstimmung (heller = höher). */
+  rank: number;
+}
+function skyItems(): SkyItem[] {
+  const out: SkyItem[] = sky.map((b) => {
+    const name = t(b.kind === 'sun' ? 'sky.sun' : 'sky.moon');
+    return { key: b.kind, name, names: [name, b.kind], az: b.az, alt: b.alt, kind: b.kind, rank: 30 };
+  });
+  if (night) {
+    for (const o of night.objects) {
+      out.push({ key: o.key, name: o.name, names: [o.name, o.key.slice(o.key.indexOf(':') + 1)], az: o.az, alt: o.alt, kind: o.kind, rank: 10 - o.mag });
+    }
+    preparedSky?.data.constellations.forEach((c, i) => {
+      const l = night!.labels[i];
+      if (l) out.push({ key: `con:${c.id}`, name: l.text, names: Object.values(c.names), az: l.az, alt: l.alt, kind: 'constellation', rank: 0 });
+    });
+  }
+  return out;
+}
+
+/** Ziel der Suche als Name und Richtung (Gipfel oder Himmelskörper). */
+function targetPoint(): { name: string; az: number; angle: number } | null {
+  if (targetId !== null) {
+    const p = pano?.peaks.find((q) => q.id === targetId);
+    return p ? { name: peakName(p), az: p.az, angle: p.angle } : null;
+  }
+  if (targetSky !== null) {
+    const o = skyItems().find((x) => x.key === targetSky);
+    return o ? { name: o.name, az: o.az, angle: o.alt } : null;
+  }
+  return null;
+}
+
+function aboveTerrainNow(az: number, alt: number): boolean {
+  const p = pano;
+  return !p || alt >= p.horizon[Math.round(az / p.azStep) % p.horizon.length];
+}
+
 function showResults() {
-  const q = searchInput.value;
-  const hits = searchPeaks(pano?.peaks ?? [], q);
+  const q = fold(searchInput.value.trim());
+  type Hit = { score: number; rank: number; label: string; meta: string; pick: () => void };
+  const hits: Hit[] = [];
+  const dirOf = (az: number) => `${compassLabels(16)[Math.round(az / 22.5) % 16]} ${Math.round(az)}°`;
+  if (q && showTerrainIn.checked) {
+    // Reihenfolge der Gipfel untereinander wie scorePeaks (Bekanntheit, sichtbar, Höhe)
+    scorePeaks(pano?.peaks ?? [], q).forEach(({ p, s: score }, i, all) => {
+      hits.push({
+        score,
+        rank: all.length - i,
+        label: peakName(p),
+        meta:
+          `${Math.round(p.ele)} m · ${(p.dist / 1000).toFixed(p.dist < 10_000 ? 1 : 0)} km · ${dirOf(p.az)}` + (p.visible ? '' : ` · ${t('peak.hidden')}`),
+        pick: () => setTarget({ peak: p }),
+      });
+    });
+  }
+  if (q && showSkyIn.checked) {
+    for (const o of skyItems()) {
+      const score = nameScore(o.names, q);
+      if (!score) continue;
+      const kind = o.kind === 'planet' ? t('search.planet') : o.kind === 'star' ? t('search.star') : o.kind === 'constellation' ? t('search.constellation') : '';
+      const where = aboveTerrainNow(o.az, o.alt) ? `${o.alt.toFixed(0)}° · ${dirOf(o.az)}` : t('search.below');
+      hits.push({ score, rank: o.rank, label: o.name, meta: [kind, where].filter(Boolean).join(' · '), pick: () => setTarget({ sky: o.key }) });
+    }
+  }
+  hits.sort((a, b) => b.score - a.score || b.rank - a.rank);
   searchResults.replaceChildren(
-    ...hits.map((p) => {
+    ...hits.slice(0, 10).map((h) => {
       const li = document.createElement('li');
       const btn = document.createElement('button');
       btn.type = 'button';
       const name = document.createElement('span');
-      name.textContent = peakName(p);
+      name.textContent = h.label;
       const meta = document.createElement('span');
       meta.className = 'meta';
-      const dir = compassLabels(16)[Math.round(p.az / 22.5) % 16];
-      meta.textContent =
-        `${Math.round(p.ele)} m · ${(p.dist / 1000).toFixed(p.dist < 10_000 ? 1 : 0)} km · ${dir} ${Math.round(p.az)}°` +
-        (p.visible ? '' : ` · ${t('peak.hidden')}`);
+      meta.textContent = h.meta;
       btn.append(name, meta);
-      btn.addEventListener('click', () => setTarget(p));
+      btn.addEventListener('click', h.pick);
       li.append(btn);
       return li;
     }),
@@ -903,9 +975,11 @@ function showResults() {
 }
 
 /** Ziel setzen; ohne Sensor dreht sich der Blick direkt hin. */
-function setTarget(p: Peak | null) {
-  targetId = p?.id ?? null;
+function setTarget(target: { peak: Peak } | { sky: string } | null) {
+  targetId = target && 'peak' in target ? target.peak.id : null;
+  targetSky = target && 'sky' in target ? target.sky : null;
   setSearch(false);
+  const p = targetPoint();
   if (p && !sensorOn) {
     cam.heading = p.az;
     cam.pitch = Math.max(-30, Math.min(30, p.angle));
@@ -917,10 +991,10 @@ $<HTMLButtonElement>('target-close').addEventListener('click', () => setTarget(n
 
 /** Ziel-Chip: Name und Drehrichtung in Worten. */
 function syncTarget() {
-  const p = targetId === null ? undefined : pano?.peaks.find((q) => q.id === targetId);
+  const p = targetPoint();
   targetChip.hidden = !p;
   if (!p) return;
-  const name = peakName(p);
+  const name = p.name;
   const turn = turnToTarget(cam, p.az);
   const vfov = (cam.hfov * cam.height) / cam.width;
   const dp = p.angle - cam.pitch;
