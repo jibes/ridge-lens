@@ -724,6 +724,36 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
   navigator.serviceWorker.register('./sw.js').catch((err) => console.warn('Service Worker:', err));
 }
 
+// --- Neue Version ------------------------------------------------------------------
+// Nach einem Deploy fehlen die Dateien der alten Version auf dem Server; eine lange offene
+// App würde mit halb altem Code weiterlaufen. Beim Zurückkehren in die App still neu laden,
+// während der Nutzung nur einen Hinweis zeigen.
+
+const updateToast = $<HTMLDivElement>('update');
+let lastVersionCheck = 0;
+
+async function newVersionAvailable(): Promise<boolean> {
+  if (!import.meta.env.PROD || !navigator.onLine) return false;
+  lastVersionCheck = Date.now();
+  try {
+    const res = await fetch('./version.json', { cache: 'no-store' });
+    if (!res.ok) return false;
+    const { build } = (await res.json()) as { build?: string };
+    return !!build && build !== import.meta.env.VITE_BUILD_ID;
+  } catch {
+    return false;
+  }
+}
+
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible' || Date.now() - lastVersionCheck < 60_000) return;
+  if (await newVersionAvailable()) location.reload();
+});
+window.setInterval(async () => {
+  if (document.visibilityState === 'visible' && updateToast.hidden && (await newVersionAvailable())) updateToast.hidden = false;
+}, 15 * 60_000);
+$<HTMLButtonElement>('update-reload').addEventListener('click', () => location.reload());
+
 interface InstallPromptEvent extends Event {
   prompt(): Promise<void>;
 }

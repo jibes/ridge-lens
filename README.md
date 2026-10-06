@@ -32,6 +32,8 @@ Deutsch, Englisch, Französisch, Italienisch – automatisch nach Systemsprache 
 
 Android (Chrome/Brave): Knopf „Installieren“ oder Browsermenü → „Zum Startbildschirm hinzufügen“. iOS (Safari): Teilen → „Zum Home-Bildschirm“.
 
+Updates: Jeder Build schreibt eine Kennung nach `version.json`. Kehrt man nach einem Deploy in die App zurück, lädt sie sich still neu; bleibt sie offen, erscheint nach spätestens 15 Minuten der Hinweis „Neue Version verfügbar“.
+
 Der Service Worker (`public/sw.js`) hält die App-Shell und alle geladenen Höhenkacheln im Cache; Gipfel liegen im Cache der App. Einmal mit Netz berechnete Standorte funktionieren danach offline.
 
 ## Kamerabild
