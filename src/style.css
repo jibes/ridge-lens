@@ -431,7 +431,8 @@ input[type='checkbox'] {
   height: 18px;
   accent-color: var(--accent);
 }
-label.lang {
+label.lang,
+#manual-cal-row {
   margin-top: 12px;
 }
 h3.group {

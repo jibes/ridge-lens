@@ -106,16 +106,19 @@
         <h3 class="group" data-i18n="settings.groupCamera"></h3>
         <label class="check" id="auto-align-row"><input id="auto-align" type="checkbox" checked /> <span data-i18n="settings.autoAlign"></span></label>
         <label class="lang" hidden><span data-i18n="settings.camera"></span><select id="camera-select"></select></label>
-        <div class="row" id="camera-fov-row" hidden>
-          <span class="help" id="camera-fov"></span>
-          <button type="button" id="camera-fov-reset" data-i18n="settings.resetCameraFov"></button>
-        </div>
-        <div class="row">
-          <button type="button" id="offset-reset" data-i18n="settings.resetOffset"></button>
+        <label class="check" id="manual-cal-row"><input id="manual-cal" type="checkbox" /> <span data-i18n="settings.manualCal"></span></label>
+        <div id="manual-tools" hidden>
+          <p class="help" data-i18n="settings.help"></p>
+          <div class="row" id="camera-fov-row" hidden>
+            <span class="help" id="camera-fov"></span>
+            <button type="button" id="camera-fov-reset" data-i18n="settings.resetCameraFov"></button>
+          </div>
+          <div class="row">
+            <button type="button" id="offset-reset" data-i18n="settings.resetOffset"></button>
+          </div>
         </div>
         <details class="more">
           <summary data-i18n="settings.details"></summary>
-          <p class="help" data-i18n="settings.help"></p>
           <p class="help" id="declination" hidden></p>
           <p class="help" id="sensor-noise" hidden></p>
         </details>

@@ -101,6 +101,7 @@ const tracker = new OrientationTracker(() => {
   requestRender();
 });
 let sensorOn = false;
+let manualCal = false;
 const OFFSET_KEY = 'ridge-lens-offset';
 /** Ältere Korrekturen (ohne `v: 2`) enthalten die Missweisung noch; wird beim ersten Standort abgezogen. */
 let legacyOffset = false;
@@ -404,6 +405,8 @@ function clampFov(f: number) {
 function zoomBy(factor: number) {
   const size = cameraFeed.size;
   if (cameraShown()) {
+    // Bildwinkel kalibriert sich am Bild; von Hand nur im manuellen Modus
+    if (!manualCal) return;
     const target = cam.hfov * factor;
     cameraFov = Math.min(120, Math.max(30, fovLongFromDisplay(target, size.w, size.h, cam.width, cam.height)));
     saveCameraFov();
@@ -415,6 +418,7 @@ function zoomBy(factor: number) {
 /** Blick drehen/neigen; im Sensormodus wird stattdessen die Korrektur verschoben. */
 function rotateBy(dHeading: number, dPitch: number) {
   if (sensorOn) {
+    if (!manualCal) return;
     offset.heading = deltaDeg(offset.heading + dHeading, 0);
     offset.pitch = Math.max(-20, Math.min(20, offset.pitch + dPitch));
     saveOffset();
@@ -548,8 +552,11 @@ function updateAlignBar() {
   const sel = selection();
   alignBar.hidden = !sel;
   if (!sel) return;
-  alignText.textContent = sensorOn ? t('align.instruction', { name: sel.name }) : `${sel.name} · ${sel.details}`;
-  alignApply.textContent = t(sensorOn ? 'align.apply' : 'align.center');
+  // Mit Sensoren nur im manuellen Modus "Übernehmen" anbieten, sonst bloß Infos
+  const calibrate = sensorOn && manualCal;
+  alignText.textContent = calibrate ? t('align.instruction', { name: sel.name }) : `${sel.name} · ${sel.details}`;
+  alignApply.hidden = sensorOn && !manualCal;
+  alignApply.textContent = t(calibrate ? 'align.apply' : 'align.center');
 }
 
 alignApply.addEventListener('click', () => {
@@ -901,7 +908,7 @@ function syncSensor() {
 /** Rauschanzeige im offenen Einstellungsblatt: zeigt, welche Achse zittert. */
 const noiseEl = $<HTMLParagraphElement>('sensor-noise');
 function updateNoise() {
-  const camRow = cameraShown() && panel.hidden === false;
+  const camRow = manualCal && cameraShown() && panel.hidden === false;
   cameraFovRow.hidden = !camRow;
   if (camRow) cameraFovText.textContent = t('settings.cameraFov', { fov: cameraFov.toFixed(1) });
   const n = sensorOn && panel.hidden === false ? tracker.noise : null;
@@ -1180,6 +1187,29 @@ $<HTMLButtonElement>('camera-fov-reset').addEventListener('click', () => {
 });
 
 // --- Automatischer Abgleich am Kamerabild -----------------------------------------
+
+/** Manuelle Kalibrierung (Ziehen, Zoomen, Gipfel übernehmen); sonst nur Bildabgleich. */
+const manualCalIn = $<HTMLInputElement>('manual-cal');
+const manualTools = $<HTMLDivElement>('manual-tools');
+const MANUAL_CAL_KEY = 'ridge-lens-manual-cal';
+try {
+  manualCal = localStorage.getItem(MANUAL_CAL_KEY) === 'on';
+} catch {
+  /* kein Speicher */
+}
+manualCalIn.checked = manualCal;
+manualTools.hidden = !manualCal;
+manualCalIn.addEventListener('change', () => {
+  manualCal = manualCalIn.checked;
+  manualTools.hidden = !manualCal;
+  try {
+    localStorage.setItem(MANUAL_CAL_KEY, manualCal ? 'on' : 'off');
+  } catch {
+    /* kein Speicher */
+  }
+  updateAlignBar();
+  updateNoise();
+});
 
 const visionWorker = new Worker(new URL('./vision-worker.ts', import.meta.url), { type: 'module' });
 const autoAlignIn = $<HTMLInputElement>('auto-align');
