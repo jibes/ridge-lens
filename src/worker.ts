@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-import { Dem, fetchTerrariumTile, metersPerPixel } from './dem';
+import { Dem, FAR_ZOOM, NEAR_RADIUS, NEAR_ZOOM, fetchTerrariumTile, metersPerPixel } from './dem';
 import { bearing, deltaDeg, distance, elevationAngle, type LatLon } from './geo';
 import { castRay, extractRidges, linkRidges, observerGround, occlusionAngle, pruneLines, type MercSampler, type RayOptions, type RidgePoint, type Sampler } from './panorama';
 import { loadPeakTiles, tilesFor, type PeakRaw, type PeakTile } from './peaks';
@@ -14,9 +14,6 @@ class KeyedError extends Error {
 }
 
 const AZ_STEP = 0.1;
-const NEAR_ZOOM = 12;
-const FAR_ZOOM = 10;
-const NEAR_RADIUS = 8000;
 
 /** Wartezeit auf die eigene Gipfelkachel (Gipfelhöhe als Standorthöhe), danach ohne weiter. */
 const FIRST_TILE_WAIT_MS = 8_000;

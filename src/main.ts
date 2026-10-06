@@ -1,6 +1,7 @@
 import { deltaDeg, normalizeDeg } from './geo';
 import { OrientationTracker } from './orientation';
 import { decimalYear, declination as magneticDeclination } from './magnetic';
+import { prefetchArea } from './offline';
 import { azimuthInView, projector, type Camera } from './projection';
 import type { ComputeRequest, PanoramaResult, Peak, WorkerMessage } from './protocol';
 import { applyDom, compassLabels, detectLang, lang, setLang, storedLangChoice, storeLangChoice, t, type Lang } from './i18n';
@@ -1097,6 +1098,28 @@ void keepScreenOn();
 
 // --- Installierbare App (PWA) ------------------------------------------------------
 
+// --- Offline -----------------------------------------------------------------------
+
+// Gespeicherte Kacheln nicht vom Browser wegräumen lassen (Offline am Berg)
+void navigator.storage?.persist?.().catch(() => false);
+
+const offlineBtn = $<HTMLButtonElement>('offline-save');
+const offlineStatus = $<HTMLParagraphElement>('offline-status');
+offlineBtn.addEventListener('click', async () => {
+  const lat = pano?.request.lat ?? Number(latIn.value);
+  const lon = pano?.request.lon ?? Number(lonIn.value);
+  const radius = (pano?.request.radius ?? Number(radiusIn.value) * 1000) || 100_000;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  offlineBtn.disabled = true;
+  offlineStatus.hidden = false;
+  const mb = (b: number) => (b / 1e6).toFixed(0);
+  const p = await prefetchArea({ lat, lon }, radius, (p) => {
+    offlineStatus.textContent = t('offline.progress', { done: p.done, total: p.total, mb: mb(p.bytes) });
+  });
+  offlineStatus.textContent = p.failed ? t('offline.failed', { n: p.failed }) : t('offline.done', { n: p.total, mb: mb(p.bytes) });
+  offlineBtn.disabled = false;
+});
+
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
   navigator.serviceWorker.register('./sw.js').catch((err) => console.warn('Service Worker:', err));
 }
@@ -1378,6 +1401,11 @@ let lastMatchSource: VisionResponse['source'] | 'fov' = 'skyline';
 let lastPose: { heading: number; pitch: number } | null = null;
 
 /** Ein Videobild im angezeigten Ausschnitt (object-fit: cover) verkleinert an den Worker. */
+/** Ruhiger Abgleich: Zahl kleiner Korrekturen in Folge, Blick dabei, letzter Versand. */
+let calmCount = 0;
+let calmPose = { heading: 0, pitch: 0 };
+let lastVisionSent = 0;
+
 function visionTick() {
   const pose = { heading: cam.heading, pitch: cam.pitch };
   const dh = lastPose ? Math.abs(deltaDeg(pose.heading, lastPose.heading)) : Infinity;
@@ -1386,6 +1414,13 @@ function visionTick() {
   // Langsames Schwenken: Bild nur fürs Rundumprofil (Bildverzögerung verschmiert sonst den Kurs)
   const moving = !steady && dh < 6 && dp < 2;
   lastPose = pose;
+  // Akku: ist die Ausrichtung stabil und der Blick ruhig, nur noch alle 4 s abgleichen
+  const now = performance.now();
+  if (Math.abs(deltaDeg(pose.heading, calmPose.heading)) > 8 || Math.abs(pose.pitch - calmPose.pitch) > 5) {
+    calmCount = 0;
+    calmPose = pose;
+  }
+  if (calmCount >= 3 && now - lastVisionSent < 4000) return;
   if (!autoAlignIn.checked || visionBusy || !(steady || moving) || !pano || !pano.complete || !sensorOn || !cameraShown() || document.hidden) return;
   if (visionHorizon !== pano.horizon) {
     visionHorizon = pano.horizon;
@@ -1408,6 +1443,7 @@ function visionTick() {
   const pixels = visionCtx.getImageData(0, 0, cols, rows).data;
   const stars = !moving ? starFrame(vw, vh, sw, sh) : undefined;
   visionBusy = true;
+  lastVisionSent = now;
   offsetPitchAtSend = totalPitchOffset();
   offsetHeadingAtSend = totalHeadingOffset();
   visionWorker.postMessage(
@@ -1504,6 +1540,7 @@ visionWorker.onmessage = (ev: MessageEvent<VisionResponse>) => {
   const { match, cam: snap } = ev.data;
   const source = ev.data.source;
   if (!match.ok || !sensorOn || !cameraShown()) return;
+  calmCount = Math.abs(match.dHeading) < 0.3 && Math.abs(match.dPitch) < 0.2 ? calmCount + 1 : 0;
   if (source === 'pitch' && calibrateFromTilt(match, snap)) {
     lastMatchAt = performance.now();
     lastMatchSource = 'fov';

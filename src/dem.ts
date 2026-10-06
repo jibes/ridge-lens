@@ -1,7 +1,7 @@
 import { destination, type LatLon } from './geo';
 
 const TILE = 256;
-const TERRARIUM_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium';
+export const TERRARIUM_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium';
 
 /** Terrarium-Kodierung: Höhe = R·256 + G + B/256 − 32768. */
 export function decodeTerrarium(rgba: Uint8ClampedArray): Float32Array {
@@ -36,6 +36,27 @@ export function tileCorners(z: number, x: number, y: number): LatLon[] {
 export function metersPerPixel(lat: number, z: number): number {
   return (40_075_016.686 * Math.cos((lat * Math.PI) / 180)) / (TILE * 2 ** z);
 }
+
+/** Kacheln (x, y) auf Zoomstufe z, die einen Kreis mit Radius `radius` (m) um `center` abdecken. */
+export function tilesCovering(center: LatLon, radius: number, z: number): [number, number][] {
+  const n = 2 ** z;
+  const corners = [0, 90, 180, 270].map((az) => destination(center, az, radius));
+  const [x0, y0] = lonLatToPixel(corners[0].lat, corners[3].lon, z);
+  const [x1, y1] = lonLatToPixel(corners[2].lat, corners[1].lon, z);
+  const out: [number, number][] = [];
+  for (let ty = Math.floor(y0 / TILE); ty <= Math.floor(y1 / TILE); ty++) {
+    for (let tx = Math.floor(x0 / TILE); tx <= Math.floor(x1 / TILE); tx++) {
+      if (ty >= 0 && ty < n) out.push([((tx % n) + n) % n, ty]);
+    }
+  }
+  return out;
+}
+
+/** Zoomstufen des Panoramas: fein im Nahbereich, grob bis zum Sichtradius. */
+export const NEAR_ZOOM = 12;
+export const FAR_ZOOM = 10;
+/** Nahbereich (m) mit feinen Kacheln. */
+export const NEAR_RADIUS = 8000;
 
 export type TileFetcher = (z: number, x: number, y: number) => Promise<Float32Array | null>;
 
@@ -141,16 +162,9 @@ export class Dem {
     /** Nur Kacheln laden, deren Ecken diese Bedingung erfüllen (z. B. Blickrichtung); Rest bei späterem Aufruf. */
     filter?: (corners: LatLon[]) => boolean,
   ): Promise<{ total: number; failed: number }> {
-    const corners = [0, 90, 180, 270].map((az) => destination(center, az, radius));
-    const [x0, y0] = lonLatToPixel(corners[0].lat, corners[3].lon, this.z);
-    const [x1, y1] = lonLatToPixel(corners[2].lat, corners[1].lon, this.z);
-    const jobs: [number, number][] = [];
-    for (let ty = Math.floor(y0 / TILE); ty <= Math.floor(y1 / TILE); ty++) {
-      for (let tx = Math.floor(x0 / TILE); tx <= Math.floor(x1 / TILE); tx++) {
-        const x = ((tx % this.n) + this.n) % this.n;
-        if (ty >= 0 && ty < this.n && !this.tiles.has(this.key(x, ty)) && (!filter || filter(tileCorners(this.z, x, ty)))) jobs.push([x, ty]);
-      }
-    }
+    const jobs = tilesCovering(center, radius, this.z).filter(
+      ([x, y]) => !this.tiles.has(this.key(x, y)) && (!filter || filter(tileCorners(this.z, x, y))),
+    );
     let done = 0;
     let failed = 0;
     const queue = jobs.slice();
