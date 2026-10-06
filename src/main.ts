@@ -1,12 +1,14 @@
 import { deltaDeg, normalizeDeg } from './geo';
 import { OrientationTracker } from './orientation';
 import { decimalYear, declination as magneticDeclination } from './magnetic';
-import type { Camera } from './projection';
+import { projector, type Camera } from './projection';
 import type { ComputeRequest, PanoramaResult, Peak, WorkerMessage } from './protocol';
 import { applyDom, compassLabels, detectLang, lang, setLang, storedLangChoice, storeLangChoice, t, type Lang } from './i18n';
 import { CameraFeed, DEFAULT_CAMERA_FOV, displayHfov, fovLongFromDisplay } from './camera';
 import type { VisionRequest, VisionResponse } from './vision-worker';
-import { CAMERA, DARK, LIGHT, renderOverview, renderView, turnToTarget, type PlacedLabel } from './render';
+import type { BodyTarget } from './vision';
+import { CAMERA, DARK, LIGHT, renderOverview, renderView, turnToTarget, type PlacedLabel, type SkyBody } from './render';
+import { bodyPath, moonPosition, sunPosition, terrainEvents } from './astro';
 import { searchPeaks } from './search';
 
 interface Preset {
@@ -80,6 +82,8 @@ let pano: PanoramaResult | null = null;
 let labels: PlacedLabel[] = [];
 let busy = false;
 let selected: Peak | null = null;
+/** Angetippte Sonne bzw. Mond (statt eines Gipfels). */
+let selectedBody: SkyBody['kind'] | null = null;
 /** Gesuchter Gipfel (Id, bleibt über Neuberechnungen erhalten). */
 let targetId: number | null = null;
 
@@ -175,6 +179,7 @@ function render() {
     bottomInset: view.getBoundingClientRect().bottom - (targetChip.hidden ? dockEl : targetChip).getBoundingClientRect().top + 8,
     peakName,
     compass: compassLabels(8),
+    sky,
     // Skala und Labels unterhalb der Statuszeile beginnen
     topInset: statusEl.getBoundingClientRect().bottom - view.getBoundingClientRect().top,
     overlay,
@@ -260,6 +265,7 @@ worker.onmessage = (ev: MessageEvent<WorkerMessage>) => {
   selected = null;
   updateAlignBar();
   showResultStatus(pano);
+  updateSky();
   requestRender();
 };
 
@@ -283,6 +289,7 @@ function compute() {
   setStatus(() => t('status.start'));
   writeHash();
   updateDeclination(lat, lon);
+  updateSky();
   worker.postMessage(req);
 }
 
@@ -476,48 +483,137 @@ function updateHover(e: PointerEvent) {
   view.title = hit ? `${peakName(hit.peak)}\n${peakDetails(hit.peak)}` : '';
 }
 
-/** Antippen eines Labels wählt den Gipfel (für Anpeilen/Zentrieren). */
+/** Antippen eines Labels wählt den Gipfel, Antippen von Sonne/Mond den Himmelskörper (für Anpeilen/Zentrieren). */
 function selectAt(e: PointerEvent) {
-  const hit = labelAt(e, 14);
-  selected = hit && hit.peak.id !== selected?.id ? hit.peak : null;
+  const body = bodyAt(e);
+  if (body) {
+    selectedBody = body === selectedBody ? null : body;
+    selected = null;
+  } else {
+    const hit = labelAt(e, 14);
+    selected = hit && hit.peak.id !== selected?.id ? hit.peak : null;
+    selectedBody = null;
+  }
   updateAlignBar();
   requestRender();
 }
 
+/** Gewählter Gipfel oder Himmelskörper: Name, Richtung und Details. */
+function selection(): { name: string; az: number; angle: number; details: string } | null {
+  if (selected) return { name: peakName(selected), az: selected.az, angle: selected.angle, details: peakDetails(selected) };
+  const b = sky.find((x) => x.kind === selectedBody);
+  if (!b) return null;
+  return { name: t(b.kind === 'sun' ? 'sky.sun' : 'sky.moon'), az: b.az, angle: b.alt, details: bodyDetails(b) };
+}
+
 function updateAlignBar() {
-  alignBar.hidden = !selected;
-  if (!selected) return;
-  alignText.textContent = sensorOn
-    ? t('align.instruction', { name: peakName(selected) })
-    : `${peakName(selected)} · ${peakDetails(selected)}`;
+  const sel = selection();
+  alignBar.hidden = !sel;
+  if (!sel) return;
+  alignText.textContent = sensorOn ? t('align.instruction', { name: sel.name }) : `${sel.name} · ${sel.details}`;
   alignApply.textContent = t(sensorOn ? 'align.apply' : 'align.center');
 }
 
 alignApply.addEventListener('click', () => {
-  if (!selected) return;
+  const sel = selection();
+  if (!sel) return;
   const a = tracker.angles;
   if (sensorOn && a) {
-    // Korrektur so, dass der Gipfel genau im Fadenkreuz liegt
-    offset.heading = deltaDeg(selected.az, trueHeading(a.heading));
-    offset.pitch = Math.max(-20, Math.min(20, selected.angle - a.pitch));
+    // Korrektur so, dass Gipfel bzw. Sonne/Mond genau im Fadenkreuz liegen
+    offset.heading = deltaDeg(sel.az, trueHeading(a.heading));
+    offset.pitch = Math.max(-20, Math.min(20, sel.angle - a.pitch));
     saveOffset();
-    const peak = selected;
     const correction = fmtSigned(offset.heading);
-    setStatus(() => t('align.done', { name: peakName(peak), offset: correction }));
+    setStatus(() => t('align.done', { name: sel.name, offset: correction }));
   } else if (!sensorOn) {
-    cam.heading = selected.az;
-    cam.pitch = Math.max(-30, Math.min(30, selected.angle));
+    cam.heading = sel.az;
+    cam.pitch = Math.max(-30, Math.min(30, sel.angle));
     writeHash();
   }
   selected = null;
+  selectedBody = null;
   updateAlignBar();
   requestRender();
 });
 $<HTMLButtonElement>('align-close').addEventListener('click', () => {
   selected = null;
+  selectedBody = null;
   updateAlignBar();
   requestRender();
 });
+
+// --- Sonne und Mond --------------------------------------------------------------
+
+let sky: SkyBody[] = [];
+let skyEvents: Record<SkyBody['kind'], { rise: number | null; set: number | null }> | null = null;
+const skyInfo = $<HTMLParagraphElement>('sky-info');
+
+/** Lage jetzt, Tagesbahnen und Auf-/Untergang über dem Gelände am aktuellen Standort. */
+function updateSky() {
+  const lat = pano?.request.lat ?? Number(latIn.value);
+  const lon = pano?.request.lon ?? Number(lonIn.value);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  const now = new Date();
+  const start = new Date(now).setHours(0, 0, 0, 0);
+  const end = start + 86_400_000;
+  const sun = sunPosition(now, lat, lon);
+  const moon = moonPosition(now, lat, lon);
+  sky = [
+    { kind: 'sun', az: sun.az, alt: sun.alt, path: bodyPath(sunPosition, lat, lon, start, end, 10) },
+    { kind: 'moon', az: moon.az, alt: moon.alt, fraction: moon.fraction, sunAz: sun.az, sunAlt: sun.alt, path: bodyPath(moonPosition, lat, lon, start, end, 10) },
+  ];
+  const p = pano;
+  const horizonAt = (az: number) => (p ? p.horizon[Math.round(az / p.azStep) % p.horizon.length] : 0);
+  skyEvents = {
+    sun: terrainEvents(bodyPath(sunPosition, lat, lon, start, end, 2), horizonAt),
+    moon: terrainEvents(bodyPath(moonPosition, lat, lon, start, end, 2), horizonAt),
+  };
+  showSkyInfo();
+  if (selectedBody) updateAlignBar();
+  requestRender();
+}
+window.setInterval(updateSky, 60_000);
+
+function fmtTime(t: number | null): string {
+  return t === null ? '–' : new Date(t).toLocaleTimeString(lang(), { hour: '2-digit', minute: '2-digit' });
+}
+
+function showSkyInfo() {
+  const moon = sky.find((b) => b.kind === 'moon');
+  if (!skyEvents || !moon) return;
+  skyInfo.hidden = false;
+  skyInfo.textContent = t('sky.info', {
+    sunRise: fmtTime(skyEvents.sun.rise),
+    sunSet: fmtTime(skyEvents.sun.set),
+    moonRise: fmtTime(skyEvents.moon.rise),
+    moonSet: fmtTime(skyEvents.moon.set),
+    pct: Math.round((moon.fraction ?? 0) * 100),
+  });
+}
+
+function bodyDetails(b: SkyBody): string {
+  const ev = skyEvents?.[b.kind];
+  return (
+    t('sky.details', { rise: fmtTime(ev?.rise ?? null), set: fmtTime(ev?.set ?? null), alt: b.alt.toFixed(1), az: Math.round(b.az) }) +
+    (b.kind === 'moon' ? ` · ${t('sky.lit', { pct: Math.round((b.fraction ?? 0) * 100) })}` : '')
+  );
+}
+
+/** Sonne/Mond unter dem Finger (Scheibe plus Toleranz), nur wenn über dem Gelände sichtbar. */
+function bodyAt(e: PointerEvent): SkyBody['kind'] | null {
+  const rect = view.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const proj = projector(cam);
+  const r = Math.max(7, (0.266 * cam.width) / cam.hfov) + 16;
+  for (const b of sky) {
+    const p = pano;
+    if (p && b.alt < p.horizon[Math.round(b.az / p.azStep) % p.horizon.length]) continue;
+    const q = proj(b.az, b.alt);
+    if (q && Math.hypot(q[0] - x, q[1] - y) <= r) return b.kind;
+  }
+  return null;
+}
 
 // --- Suche ------------------------------------------------------------------------
 
@@ -652,7 +748,9 @@ function syncSensor() {
     `${dir} ${cam.heading.toFixed(0)}°` +
     (corrected ? ` · ${t('sensor.corrected', { offset: fmtSigned(offset.heading) })}` : '') +
     (tracker.status === 'relative' ? ` · ${t('sensor.noCompass')}` : '') +
-    (performance.now() - lastMatchAt < 3000 ? ` · ${t('sensor.matched')}` : '');
+    (performance.now() - lastMatchAt < 3000
+      ? ` · ${lastMatchSource === 'skyline' ? t('sensor.matched') : t(lastMatchSource === 'sun' ? 'sensor.matchedSun' : 'sensor.matchedMoon')}`
+      : '');
 }
 
 /** Rauschanzeige im offenen Einstellungsblatt: zeigt, welche Achse zittert. */
@@ -883,6 +981,7 @@ let visionHorizon: Float32Array | null = null;
 let visionBusy = false;
 let visionId = 0;
 let lastMatchAt = -Infinity;
+let lastMatchSource: VisionResponse['source'] = 'skyline';
 let lastPose: { heading: number; pitch: number } | null = null;
 
 /** Ein Videobild im angezeigten Ausschnitt (object-fit: cover) verkleinert an den Worker. */
@@ -907,24 +1006,40 @@ function visionTick() {
   const pixels = visionCtx.getImageData(0, 0, cols, rows).data;
   visionBusy = true;
   visionWorker.postMessage(
-    { type: 'frame', id: ++visionId, pixels, cols, rows, cam: { ...cam } } satisfies VisionRequest,
+    { type: 'frame', id: ++visionId, pixels, cols, rows, cam: { ...cam }, bodies: visionBodies() } satisfies VisionRequest,
     [pixels.buffer],
   );
 }
 
+/** Sonne (über dem Gelände) bzw. nachts der Mond als Fixpunkte für den Bildabgleich. */
+function visionBodies(): BodyTarget[] {
+  const p = pano;
+  const visible = (b: SkyBody) => !!p && b.alt >= p.horizon[Math.round(b.az / p.azStep) % p.horizon.length] + 0.5;
+  const sun = sky.find((b) => b.kind === 'sun');
+  const moon = sky.find((b) => b.kind === 'moon');
+  const out: BodyTarget[] = [];
+  if (sun && visible(sun)) out.push({ kind: 'sun', az: sun.az, alt: sun.alt });
+  // Mond nur in der Dämmerung/Nacht: tagsüber zu kontrastarm
+  if (moon && visible(moon) && (!sun || sun.alt < -4)) out.push({ kind: 'moon', az: moon.az, alt: moon.alt });
+  return out;
+}
+
 visionWorker.onmessage = (ev: MessageEvent<VisionResponse>) => {
   visionBusy = false;
-  const { match, cam: snap } = ev.data;
+  const { match, cam: snap, source } = ev.data;
   if (!match.ok || !sensorOn || !cameraShown()) return;
   // Korrekturen beziehen sich auf die Kamera zum Aufnahmezeitpunkt; Offsets sind darin enthalten
   offset.heading = deltaDeg(offset.heading + VISION_GAIN * match.dHeading, 0);
   offset.pitch = Math.max(-20, Math.min(20, offset.pitch + VISION_GAIN * match.dPitch));
   saveOffset();
-  const { w, h } = cameraFeed.size;
-  const hfov = snap.hfov * (1 + VISION_GAIN * (match.fovScale - 1));
-  cameraFov = Math.min(120, Math.max(30, fovLongFromDisplay(hfov, w, h, snap.width, snap.height)));
-  saveCameraFov();
+  if (source === 'skyline') {
+    const { w, h } = cameraFeed.size;
+    const hfov = snap.hfov * (1 + VISION_GAIN * (match.fovScale - 1));
+    cameraFov = Math.min(120, Math.max(30, fovLongFromDisplay(hfov, w, h, snap.width, snap.height)));
+    saveCameraFov();
+  }
   lastMatchAt = performance.now();
+  lastMatchSource = source;
   requestRender();
 };
 visionWorker.onerror = () => (visionBusy = false);
@@ -939,6 +1054,7 @@ function applyLang(choice: Lang | 'auto') {
   applyDom();
   setStatus(baseStatus);
   showDeclination();
+  showSkyInfo();
   updateAlignBar();
   requestRender();
 }

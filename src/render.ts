@@ -1,6 +1,7 @@
 import { deltaDeg, normalizeDeg } from './geo';
 import { azimuthInView, projector, type Camera } from './projection';
 import type { PanoramaResult, Peak } from './protocol';
+import type { PathPoint } from './astro';
 
 const DIST_CLASSES = 10;
 const RAD = Math.PI / 180;
@@ -26,6 +27,9 @@ export interface Palette {
   hidden: string;
   overviewBg: string;
   overviewFill: string;
+  /** Tagesbahnen von Sonne und Mond. */
+  sunPath: string;
+  moonPath: string;
 }
 
 export const LIGHT: Palette = {
@@ -44,6 +48,8 @@ export const LIGHT: Palette = {
   hidden: 'rgba(18,24,33,0.35)',
   overviewBg: 'rgba(230,238,246,0.85)',
   overviewFill: 'rgba(120,134,150,0.85)',
+  sunPath: 'rgba(214, 140, 0, 0.9)',
+  moonPath: 'rgba(90, 104, 128, 0.8)',
 };
 
 export const DARK: Palette = {
@@ -62,6 +68,8 @@ export const DARK: Palette = {
   hidden: 'rgba(237,242,247,0.3)',
   overviewBg: 'rgba(16,22,32,0.85)',
   overviewFill: 'rgba(90,110,135,0.9)',
+  sunPath: 'rgba(255, 201, 74, 0.8)',
+  moonPath: 'rgba(214, 222, 238, 0.65)',
 };
 
 /** Über dem Kamerabild: hell mit dunklem Schatten, lesbar auf Himmel, Fels und Schnee. */
@@ -75,6 +83,8 @@ export const CAMERA: Palette = {
   halo: 'rgba(0,0,0,0.55)',
   leader: 'rgba(255,255,255,0.75)',
   hidden: 'rgba(255,255,255,0.45)',
+  sunPath: 'rgba(255, 201, 74, 0.9)',
+  moonPath: 'rgba(230, 236, 248, 0.8)',
 };
 
 function mix(a: RGB, b: RGB, t: number): string {
@@ -99,6 +109,21 @@ export interface RenderOptions {
   peakName: (p: Peak) => string;
   /** Himmelsrichtungen N, NO, … in der UI-Sprache. */
   compass: string[];
+  /** Sonne und Mond (leer = nicht zeichnen). */
+  sky: SkyBody[];
+}
+
+/** Sonne oder Mond zum Zeichnen: aktuelle Lage und Tagesbahn. */
+export interface SkyBody {
+  kind: 'sun' | 'moon';
+  az: number;
+  alt: number;
+  /** Mond: beleuchteter Anteil und Richtung zur Sonne (für die Lichtseite). */
+  fraction?: number;
+  sunAz?: number;
+  sunAlt?: number;
+  /** Bahn des Tages (lokale Mitternacht bis Mitternacht). */
+  path: PathPoint[];
 }
 
 export interface PlacedLabel {
@@ -120,6 +145,7 @@ export function renderView(
   const proj = projector(cam);
   if (opts.overlay) {
     ctx.clearRect(0, 0, W, H);
+    drawSky(ctx, cam, pano, opts.sky, proj, pal);
     if (pano) {
       ctx.save();
       ctx.shadowColor = 'rgba(0,0,0,0.6)';
@@ -133,6 +159,7 @@ export function renderView(
     sky.addColorStop(1, pal.skyBottom);
     ctx.fillStyle = sky;
     ctx.fillRect(0, 0, W, H);
+    drawSky(ctx, cam, pano, opts.sky, proj, pal);
     if (pano) {
       drawGround(ctx, cam, pano, proj, pal);
       drawLines(ctx, cam, pano, proj, pal);
@@ -145,6 +172,120 @@ export function renderView(
   const target = opts.targetPeakId === null ? undefined : pano?.peaks.find((p) => p.id === opts.targetPeakId);
   if (target) drawTarget(ctx, cam, target, proj, pal, scaleY + 26, opts.bottomInset);
   return placed;
+}
+
+const SUN_COLOR = '#ffc94a';
+const MOON_LIT = '#eef1f6';
+const MOON_DARK = 'rgba(58, 66, 82, 0.9)';
+/** Scheinbarer Radius von Sonne und Mond (Grad). */
+const DISC_RADIUS = 0.266;
+
+/** Sichtbar, wenn über der Gelände-Silhouette (ohne Panorama: über dem Horizont). */
+function aboveTerrain(pano: PanoramaResult | null, az: number, alt: number): boolean {
+  if (!pano) return alt > 0;
+  const n = pano.horizon.length;
+  return alt >= pano.horizon[Math.round(az / pano.azStep) % n];
+}
+
+/** Tagesbahnen mit Stundenmarken, dann die Scheiben; hinter dem Gelände ausgeblendet. */
+function drawSky(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaResult | null, bodies: SkyBody[], proj: Project, pal: Palette) {
+  const pxPerDeg = cam.width / cam.hfov;
+  ctx.save();
+  for (const b of bodies) {
+    const color = b.kind === 'sun' ? pal.sunPath : pal.moonPath;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    let pen = false;
+    for (const p of b.path) {
+      const q = aboveTerrain(pano, p.az, p.alt) && azimuthInView(cam, p.az, 5) ? proj(p.az, p.alt) : null;
+      if (!q) {
+        pen = false;
+        continue;
+      }
+      if (pen) ctx.lineTo(q[0], q[1]);
+      else ctx.moveTo(q[0], q[1]);
+      pen = true;
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Volle Stunden: Punkt und Uhrzeit
+    ctx.font = `600 11px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    for (const p of b.path) {
+      const d = new Date(p.t);
+      if (d.getMinutes() !== 0 || !aboveTerrain(pano, p.az, p.alt) || !azimuthInView(cam, p.az, 1)) continue;
+      const q = proj(p.az, p.alt);
+      if (!q) continue;
+      ctx.beginPath();
+      ctx.arc(q[0], q[1], 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = pal.halo;
+      ctx.strokeText(String(d.getHours()), q[0], q[1] - 5);
+      ctx.fillText(String(d.getHours()), q[0], q[1] - 5);
+    }
+  }
+  for (const b of bodies) {
+    if (!aboveTerrain(pano, b.az, b.alt) || !azimuthInView(cam, b.az, 2)) continue;
+    const q = proj(b.az, b.alt);
+    if (!q) continue;
+    const r = Math.max(7, DISC_RADIUS * pxPerDeg);
+    if (b.kind === 'sun') {
+      const glow = ctx.createRadialGradient(q[0], q[1], r * 0.6, q[0], q[1], r * 3);
+      glow.addColorStop(0, 'rgba(255, 210, 90, 0.55)');
+      glow.addColorStop(1, 'rgba(255, 210, 90, 0)');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(q[0], q[1], r * 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = SUN_COLOR;
+      ctx.beginPath();
+      ctx.arc(q[0], q[1], r, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      drawMoon(ctx, b, q, r, proj);
+    }
+  }
+  ctx.restore();
+}
+
+/** Mond mit Phase: Lichtseite zeigt zur Sonne (auch wenn diese unter dem Horizont steht). */
+function drawMoon(ctx: CanvasRenderingContext2D, b: SkyBody, q: [number, number], r: number, proj: Project) {
+  // Bildschirmrichtung zur Sonne: kleiner Schritt auf dem Großkreis Mond → Sonne
+  const vec = (az: number, alt: number) => [Math.cos(alt * RAD) * Math.sin(az * RAD), Math.cos(alt * RAD) * Math.cos(az * RAD), Math.sin(alt * RAD)];
+  const m = vec(b.az, b.alt);
+  const s = vec(b.sunAz ?? b.az, b.sunAlt ?? b.alt);
+  const dot = m[0] * s[0] + m[1] * s[1] + m[2] * s[2];
+  const d = s.map((v, i) => v - dot * m[i]);
+  const len = Math.hypot(d[0], d[1], d[2]) || 1;
+  const p2 = m.map((v, i) => v + (d[i] / len) * 0.01);
+  const az2 = Math.atan2(p2[0], p2[1]) / RAD;
+  const alt2 = Math.atan2(p2[2], Math.hypot(p2[0], p2[1])) / RAD;
+  const q2 = proj(((az2 % 360) + 360) % 360, alt2);
+  const angle = q2 ? Math.atan2(q2[1] - q[1], q2[0] - q[0]) : 0;
+  const k = b.fraction ?? 1;
+  const e = r * (2 * k - 1);
+  ctx.save();
+  ctx.translate(q[0], q[1]);
+  ctx.rotate(angle);
+  ctx.fillStyle = MOON_DARK;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+  // Lichtseite: Halbkreis zur Sonne (+x), zurück entlang der Terminator-Ellipse
+  ctx.shadowColor = 'rgba(230, 236, 250, 0.7)';
+  ctx.shadowBlur = r * 0.8;
+  ctx.fillStyle = MOON_LIT;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, -Math.PI / 2, Math.PI / 2);
+  if (e >= 0) ctx.ellipse(0, 0, Math.max(e, 0.01), r, 0, Math.PI / 2, (3 * Math.PI) / 2);
+  else ctx.ellipse(0, 0, -e, r, 0, Math.PI / 2, -Math.PI / 2, true);
+  ctx.fill();
+  ctx.restore();
 }
 
 function visibleBins(cam: Camera, pano: PanoramaResult): number[] {

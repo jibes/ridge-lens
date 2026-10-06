@@ -1,16 +1,18 @@
 /// <reference lib="webworker" />
 // Bildabgleich im Hintergrund, damit die Anzeige flüssig bleibt.
 import type { Camera } from './projection';
-import { extractSkyline, matchSkyline, searchWindows, type MatchResult } from './vision';
+import { detectBody, extractSkyline, matchSkyline, searchWindows, type BodyTarget, type MatchResult } from './vision';
 
 export type VisionRequest =
   | { type: 'horizon'; horizon: Float32Array; azStep: number }
-  | { type: 'frame'; id: number; pixels: Uint8ClampedArray; cols: number; rows: number; cam: Camera };
+  | { type: 'frame'; id: number; pixels: Uint8ClampedArray; cols: number; rows: number; cam: Camera; bodies: BodyTarget[] };
 
 export interface VisionResponse {
   id: number;
   cam: Camera;
   match: MatchResult;
+  /** Woran ausgerichtet wurde; Sonne/Mond liefern keinen Bildwinkel. */
+  source: 'skyline' | BodyTarget['kind'];
 }
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -33,5 +35,15 @@ self.onmessage = (ev: MessageEvent<VisionRequest>) => {
     if (!Number.isNaN(sky.y[c])) points.push({ x: ((c + 0.5) * cam.width) / cols, y: (sky.y[c] * cam.height) / rows });
   }
   const match = matchSkyline(points, horizon, azStep, cam, cols);
-  self.postMessage({ id: msg.id, cam, match } satisfies VisionResponse);
+  if (!match.ok) {
+    // Ohne brauchbare Silhouette: Sonne bzw. Mond als Fixpunkt
+    for (const body of msg.bodies) {
+      const m = detectBody(pixels, cols, rows, cam, body, horizon, azStep);
+      if (m.ok) {
+        self.postMessage({ id: msg.id, cam, match: m, source: body.kind } satisfies VisionResponse);
+        return;
+      }
+    }
+  }
+  self.postMessage({ id: msg.id, cam, match, source: 'skyline' } satisfies VisionResponse);
 };

@@ -3,7 +3,7 @@
  * zur Deckung bringen. Ergebnis sind Korrekturen für Kompass (Kurs), Neigung und
  * Bildwinkel (Skalierung) – das Kamerabild selbst bleibt unverändert.
  */
-import { cameraBasis, type Camera } from './projection';
+import { cameraBasis, project, type Camera } from './projection';
 
 const RAD = Math.PI / 180;
 const DEG = 180 / Math.PI;
@@ -280,4 +280,109 @@ export function matchSkyline(
     if (c < Math.max(fb.c + 0.15, fb.c * 2.5)) return fail('ambiguous', fb.c);
   }
   return { ok: true, dHeading: fb.dh, dPitch: fb.dp, fovScale: fb.s, cost: fb.c };
+}
+
+/** Sonne bzw. Mond mit berechneter scheinbarer Lage. */
+export interface BodyTarget {
+  kind: 'sun' | 'moon';
+  az: number;
+  alt: number;
+}
+
+/**
+ * Sonne/Mond als Fixpunkt: im Suchfenster um die berechnete Lage (±12° Kurs, ±4° Neigung)
+ * muss genau ein heller, kompakter, runder Fleck über der Gelände-Silhouette liegen.
+ * Liefert Kurs- und Neigungskorrektur (Bildwinkel bleibt, ein Punkt bestimmt ihn nicht).
+ * Verworfen: kein oder mehrere Flecken, großflächig helle Wolken/Hochnebel, Reflexe
+ * auf Schnee unter der Silhouette, Fleck am Fensterrand.
+ */
+export function detectBody(
+  rgba: Uint8ClampedArray,
+  w: number,
+  h: number,
+  cam: Camera,
+  body: BodyTarget,
+  horizon: ArrayLike<number>,
+  azStep: number,
+): MatchResult {
+  const fail = (reason: MatchResult['reason']): MatchResult => ({ ok: false, dHeading: 0, dPitch: 0, fovScale: 1, cost: Infinity, reason });
+  const p = project(cam, body.az, body.alt);
+  if (!p) return fail('few-columns');
+  const sx = w / cam.width;
+  const sy = h / cam.height;
+  const F = cam.width / 2 / Math.tan((cam.hfov / 2) * RAD);
+  const cx = p[0] * sx;
+  const cy = p[1] * sy;
+  const rx = F * Math.tan(12 * RAD) * sx;
+  const ry = F * Math.tan(4 * RAD) * sy;
+  const x0 = Math.max(0, Math.floor(cx - rx));
+  const x1 = Math.min(w - 1, Math.ceil(cx + rx));
+  const y0 = Math.max(0, Math.floor(cy - ry));
+  const y1 = Math.min(h - 1, Math.ceil(cy + ry));
+  if (x1 - x0 < 4 || y1 - y0 < 4) return fail('few-columns');
+
+  const lum = (i: number) => 0.299 * rgba[i * 4] + 0.587 * rgba[i * 4 + 1] + 0.114 * rgba[i * 4 + 2];
+  let threshold: number;
+  if (body.kind === 'sun') {
+    threshold = 245;
+  } else {
+    // Mond nachts: deutlich heller als der (dunkle) Median des Fensters
+    const vals: number[] = [];
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) vals.push(lum(y * w + x));
+    vals.sort((a, b) => a - b);
+    threshold = Math.max(150, vals[vals.length >> 1] + 90);
+  }
+  const bright = (i: number) =>
+    body.kind === 'sun' ? Math.min(rgba[i * 4], rgba[i * 4 + 1], rgba[i * 4 + 2]) >= threshold : lum(i) >= threshold;
+
+  // Zusammenhängende helle Flecken im Fenster (4er-Nachbarschaft)
+  const seen = new Uint8Array(w * h);
+  const blobs: { n: number; sx: number; sy: number; minX: number; maxX: number; minY: number; maxY: number; edge: boolean }[] = [];
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i0 = y * w + x;
+      if (seen[i0] || !bright(i0)) continue;
+      const blob = { n: 0, sx: 0, sy: 0, minX: x, maxX: x, minY: y, maxY: y, edge: false };
+      const stack = [i0];
+      seen[i0] = 1;
+      while (stack.length) {
+        const i = stack.pop()!;
+        const px = i % w;
+        const py = (i - px) / w;
+        blob.n++;
+        blob.sx += px;
+        blob.sy += py;
+        blob.minX = Math.min(blob.minX, px);
+        blob.maxX = Math.max(blob.maxX, px);
+        blob.minY = Math.min(blob.minY, py);
+        blob.maxY = Math.max(blob.maxY, py);
+        if (px === x0 || px === x1 || py === y0 || py === y1) blob.edge = true;
+        for (const [nx, ny] of [[px + 1, py], [px - 1, py], [px, py + 1], [px, py - 1]]) {
+          if (nx < x0 || nx > x1 || ny < y0 || ny > y1) continue;
+          const j = ny * w + nx;
+          if (!seen[j] && bright(j)) {
+            seen[j] = 1;
+            stack.push(j);
+          }
+        }
+      }
+      blobs.push(blob);
+    }
+  }
+  if (!blobs.length) return fail('few-columns');
+  blobs.sort((a, b) => b.n - a.n);
+  const b = blobs[0];
+  if (blobs.length > 1 && blobs[1].n >= 0.3 * b.n) return fail('ambiguous');
+  // Größe: Scheibe samt Überstrahlung höchstens ~6-facher Radius
+  const r = Math.max(1, F * Math.tan(0.266 * RAD) * sx);
+  if (b.edge || b.n > Math.PI * (6 * r + 2) ** 2) return fail('poor-fit');
+  const bw = b.maxX - b.minX + 1;
+  const bh = b.maxY - b.minY + 1;
+  if (b.n >= 6 && (Math.max(bw, bh) / Math.min(bw, bh) > 1.8 || b.n / (bw * bh) < 0.45)) return fail('poor-fit');
+
+  // Schwerpunkt → Richtung mit der Sensor-Kamera; muss über der Silhouette liegen
+  const [az, el] = screenToDir(cam, (b.sx / b.n + 0.5) / sx, (b.sy / b.n + 0.5) / sy);
+  if (el < horizonAt(horizon, azStep, az) + 0.3) return fail('poor-fit');
+  const dHeading = ((((body.az - az) % 360) + 540) % 360) - 180;
+  return { ok: true, dHeading, dPitch: body.alt - el, fovScale: 1, cost: 0 };
 }

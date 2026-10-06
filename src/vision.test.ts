@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Camera } from './projection';
-import { extractSkyline, matchSkyline, screenToDir, searchWindows } from './vision';
+import { detectBody, extractSkyline, matchSkyline, screenToDir, searchWindows, type BodyTarget } from './vision';
 import { project } from './projection';
 
 const AZ_STEP = 0.1;
@@ -154,5 +154,75 @@ describe('skyline matching', () => {
     }
     expect(clearAccepted).toBeGreaterThanOrEqual(5);
     expect(accepted).toBeGreaterThanOrEqual(6);
+  });
+});
+
+/** Himmel mit Sonne (überstrahlt) bzw. nachts mit Mond; Gelände nach Horizontprofil. */
+function renderSky(
+  cam: Camera,
+  horizon: Float32Array,
+  bodies: { az: number; alt: number; glow: number }[],
+  opts: { night?: boolean; overcast?: boolean } = {},
+): Uint8ClampedArray {
+  const img = new Uint8ClampedArray(COLS * ROWS * 4);
+  const R = Math.PI / 180;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const [az, el] = screenToDir(cam, ((c + 0.5) * W) / COLS, ((r + 0.5) * H) / ROWS);
+      const hz = horizon[Math.round((((az % 360) + 360) % 360) / AZ_STEP) % 3600];
+      let rgb = opts.night ? [12, 14, 24] : opts.overcast ? [252, 252, 252] : [120, 165, 225];
+      if (el > hz) {
+        for (const b of bodies) {
+          const d = Math.acos(Math.min(1, Math.sin(el * R) * Math.sin(b.alt * R) + Math.cos(el * R) * Math.cos(b.alt * R) * Math.cos((az - b.az) * R))) / R;
+          if (d < b.glow) rgb = opts.night ? [215, 215, 205] : [255, 255, 255];
+          else if (!opts.night && d < b.glow * 2.5) rgb = [235, 238, 240];
+        }
+      } else rgb = [235, 238, 242].map((v) => (el > hz - 0.6 ? v : v * 0.4) * (opts.night ? 0.25 : 1)); // Schnee am Grat, darunter Fels
+      const p = (r * COLS + c) * 4;
+      img[p] = rgb[0] + noise(4);
+      img[p + 1] = rgb[1] + noise(4);
+      img[p + 2] = rgb[2] + noise(4);
+      img[p + 3] = 255;
+    }
+  }
+  return img;
+}
+
+describe('sun and moon as reference', () => {
+  const horizon = mountainHorizon();
+  const sun: BodyTarget = { kind: 'sun', az: 207, alt: 9 };
+  const sensor: Camera = { ...truth, heading: truth.heading + 5, pitch: truth.pitch + 1 };
+
+  it('recovers compass and pitch from the sun disc', () => {
+    const img = renderSky(truth, horizon, [{ az: sun.az, alt: sun.alt, glow: 1.2 }]);
+    const m = detectBody(img, COLS, ROWS, sensor, sun, horizon, AZ_STEP);
+    expect(m.ok).toBe(true);
+    expect(m.dHeading).toBeCloseTo(-5, 0);
+    expect(Math.abs(sensor.heading + m.dHeading - truth.heading)).toBeLessThan(0.3);
+    expect(Math.abs(sensor.pitch + m.dPitch - truth.pitch)).toBeLessThan(0.3);
+  });
+
+  it('recovers from the moon at night', () => {
+    const moon: BodyTarget = { kind: 'moon', az: 214, alt: 10 };
+    const img = renderSky(truth, horizon, [{ az: moon.az, alt: moon.alt, glow: 0.4 }], { night: true });
+    const m = detectBody(img, COLS, ROWS, sensor, moon, horizon, AZ_STEP);
+    expect(m.ok).toBe(true);
+    expect(Math.abs(sensor.heading + m.dHeading - truth.heading)).toBeLessThan(0.3);
+  });
+
+  it('rejects two bright spots, overcast sky and a sun behind the ridge', () => {
+    const two = renderSky(truth, horizon, [{ az: sun.az, alt: sun.alt, glow: 1.2 }, { az: sun.az + 6, alt: sun.alt + 1, glow: 1.2 }]);
+    expect(detectBody(two, COLS, ROWS, sensor, sun, horizon, AZ_STEP).ok).toBe(false);
+    const grey = renderSky(truth, horizon, [], { overcast: true });
+    expect(detectBody(grey, COLS, ROWS, sensor, sun, horizon, AZ_STEP).ok).toBe(false);
+    // Sonne knapp unter dem Grat: nur die Überstrahlung darüber sichtbar
+    const behind: BodyTarget = { kind: 'sun', az: 212, alt: 4.6 };
+    const hid = renderSky(truth, horizon, [{ az: behind.az, alt: behind.alt, glow: 1.2 }]);
+    expect(detectBody(hid, COLS, ROWS, sensor, behind, horizon, AZ_STEP).ok).toBe(false);
+  });
+
+  it('nothing bright → no correction', () => {
+    const img = renderSky(truth, horizon, []);
+    expect(detectBody(img, COLS, ROWS, sensor, sun, horizon, AZ_STEP).ok).toBe(false);
   });
 });

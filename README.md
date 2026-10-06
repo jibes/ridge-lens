@@ -44,6 +44,12 @@ Automatischer Abgleich (`src/vision.ts`, im Worker `src/vision-worker.ts`, absch
 
 Manuell: Gipfel antippen und anpeilen richtet den Kompass aus; mit zwei Fingern den Bildwinkel anpassen (Wert und Zurücksetzen in den Einstellungen).
 
+## Sonne und Mond
+
+Sonne und Mond (mit Phase) erscheinen an ihrer scheinbaren Position, mit gestrichelter Tagesbahn und Stundenmarken; hinter dem Gelände verdeckt. Berechnung in `src/astro.ts` (Meeus, Sonne ≈ 0,01°, Mond ≈ 0,1° inkl. Parallaxe; Refraktion), geprüft u. a. an drei totalen Sonnenfinsternissen. Die Einstellungen zeigen Auf- und Untergang **über dem echten Gelände** (nicht über dem flachen Horizont). Antippen zeigt Zeiten, Höhe und Beleuchtung; im Sensormodus lässt sich der Kompass daran ausrichten wie an einem Gipfel.
+
+Automatischer Abgleich: Findet sich keine brauchbare Silhouette, dient die Sonne (bzw. nachts der Mond) als Fixpunkt – genau ein heller, runder, kompakter Fleck im Suchfenster um die berechnete Lage, über dem Grat (`detectBody` in `src/vision.ts`). Korrigiert Kurs und Neigung, nicht den Bildwinkel.
+
 ## Sensormodus
 
 Der Blick folgt dem Handy, das Fadenkreuz markiert die Blickrichtung der Rückkamera.
