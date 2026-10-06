@@ -509,3 +509,91 @@ export function matchPitch(
   const axis = best.reduce((s, p) => s + p.axis, 0) / best.length;
   return { ok: true, dHeading: 0, dPitch: mean, fovScale: 1, cost: std, axis };
 }
+
+/**
+ * Rundum-Abgleich: Horizontstücke vieler Bilder (auch einzeln unbrauchbarer, etwa halb
+ * von Bäumen verdeckt) im Sensor-Bezugssystem ohne Korrekturen sammeln und als breites
+ * Profil gegen das Modell legen. Über 60° und mehr hat auch flaches Hügelland genug
+ * Struktur für den Kurs. Ergebnis: absolute Kurs- und Neigungskorrektur.
+ */
+export class SkylineAccumulator {
+  static readonly BIN = 0.5;
+  private el = new Float32Array(720).fill(NaN);
+  private az = new Float32Array(720);
+  private t = new Float64Array(720);
+
+  constructor(private maxAgeMs = 90_000) {}
+
+  clear(): void {
+    this.el.fill(NaN);
+  }
+
+  /** Bildpunkte (nur mit Himmel darüber) mit der Kamera beim Aufnahmezeitpunkt; Korrekturen (Offsets) werden herausgerechnet. */
+  add(points: { x: number; y: number }[], cam: Camera, offHeading: number, offPitch: number, now: number): void {
+    for (const p of points) {
+      const [az, el] = screenToDir(cam, p.x, p.y);
+      const a = (((az - offHeading) % 360) + 360) % 360;
+      const i = Math.floor(a / SkylineAccumulator.BIN) % 720;
+      // Kanten mit Himmel darüber liegen nie unter der Silhouette (Bäume, Wolken darüber):
+      // je Richtung die tiefste behalten
+      const v = el - offPitch;
+      if (Number.isNaN(this.el[i]) || now - this.t[i] > this.maxAgeMs || v < this.el[i]) {
+        this.el[i] = v;
+        this.az[i] = a;
+        this.t[i] = now;
+      }
+    }
+  }
+
+  /** Abgedeckte Bins (nicht älter als maxAge). */
+  private samples(now: number): { az: number; el: number }[] {
+    const out: { az: number; el: number }[] = [];
+    for (let i = 0; i < 720; i++) {
+      if (!Number.isNaN(this.el[i]) && now - this.t[i] < this.maxAgeMs) out.push({ az: this.az[i], el: this.el[i] });
+    }
+    return out;
+  }
+
+  /**
+   * Kurs- und Neigungskorrektur (absolut) gegen die Modell-Silhouetten; mehrere wie beim
+   * Dunst-Abgleich. Verlangt ≥ 50° Deckung, Struktur im Modell und eine eindeutige Lösung.
+   */
+  match(horizons: ArrayLike<number>[], azStep: number, now: number): { ok: boolean; heading: number; pitch: number; cost: number } {
+    const fail = { ok: false, heading: 0, pitch: 0, cost: Infinity };
+    const s = this.samples(now);
+    if (s.length * SkylineAccumulator.BIN < 50) return fail;
+    const res = new Float64Array(s.length);
+    const evaluate = (h: ArrayLike<number>, dh: number) => {
+      for (let i = 0; i < s.length; i++) res[i] = horizonAt(h, azStep, s[i].az + dh) - s[i].el;
+      const sorted = Float64Array.from(res).sort();
+      const dp = sorted[sorted.length >> 1];
+      let n = 0;
+      // Bäume sind schon weggefiltert (tiefste Kante je Richtung): fast alle Punkte zählen, eng gekappt
+      for (let i = 0; i < s.length; i++) res[i] = Math.min(0.6, Math.abs(res[i] - dp));
+      const e = res.sort();
+      const keep = Math.max(1, Math.round(e.length * 0.85));
+      for (let i = 0; i < keep; i++) n += e[i];
+      return { dp, c: n / keep };
+    };
+    let best = { ...fail, ok: true };
+    for (const h of horizons) {
+      // Struktur: Streuung des Modells über die abgedeckten Richtungen (bei Kurs ≈ Sensor)
+      const curve: { dh: number; c: number; dp: number }[] = [];
+      for (let dh = -20; dh <= 20; dh += 0.25) curve.push({ dh, ...evaluate(h, dh) });
+      const min = curve.reduce((a, b) => (b.c < a.c ? b : a));
+      // Verfeinern
+      let f = min;
+      for (let dh = min.dh - 0.25; dh <= min.dh + 0.25; dh += 0.05) {
+        const r = evaluate(h, dh);
+        if (r.c < f.c) f = { dh, ...r };
+      }
+      // Eindeutig: keine zweite Mulde mit ähnlichem Wert
+      const rival = Math.min(...curve.filter((e) => Math.abs(e.dh - f.dh) > 2).map((e) => e.c));
+      // Kontrast: mittlere Kosten der Kurve gegenüber dem Minimum (flaches Profil → kein Kontrast)
+      const mean = curve.reduce((a, e) => a + e.c, 0) / curve.length;
+      if (f.c > 0.12 || rival < Math.max(f.c * 1.8, f.c + 0.04) || mean < Math.max(f.c * 2.5, f.c + 0.1)) continue;
+      if (f.c < best.cost) best = { ok: true, heading: f.dh, pitch: f.dp, cost: f.c };
+    }
+    return best.cost < Infinity ? best : fail;
+  }
+}

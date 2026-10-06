@@ -871,7 +871,7 @@ function syncSensor() {
     (corrected ? ` · ${t('sensor.corrected', { offset: fmtSigned(offset.heading) })}` : '') +
     (tracker.status === 'relative' ? ` · ${t('sensor.noCompass')}` : '') +
     (performance.now() - lastMatchAt < 3000
-      ? ` · ${t(({ skyline: 'sensor.matched', pitch: 'sensor.matchedPitch', fov: 'sensor.matchedFov', sun: 'sensor.matchedSun', moon: 'sensor.matchedMoon' } as const)[lastMatchSource])}`
+      ? ` · ${t(({ skyline: 'sensor.matched', pitch: 'sensor.matchedPitch', pano: 'sensor.matchedPano', fov: 'sensor.matchedFov', sun: 'sensor.matchedSun', moon: 'sensor.matchedMoon' } as const)[lastMatchSource])}`
       : '');
 }
 
@@ -1188,9 +1188,13 @@ let lastPose: { heading: number; pitch: number } | null = null;
 /** Ein Videobild im angezeigten Ausschnitt (object-fit: cover) verkleinert an den Worker. */
 function visionTick() {
   const pose = { heading: cam.heading, pitch: cam.pitch };
-  const steady = lastPose && Math.abs(deltaDeg(pose.heading, lastPose.heading)) < 1.5 && Math.abs(pose.pitch - lastPose.pitch) < 1;
+  const dh = lastPose ? Math.abs(deltaDeg(pose.heading, lastPose.heading)) : Infinity;
+  const dp = lastPose ? Math.abs(pose.pitch - lastPose.pitch) : Infinity;
+  const steady = dh < 1.5 && dp < 1;
+  // Langsames Schwenken: Bild nur fürs Rundumprofil (Bildverzögerung verschmiert sonst den Kurs)
+  const moving = !steady && dh < 6 && dp < 2;
   lastPose = pose;
-  if (!autoAlignIn.checked || visionBusy || !steady || !pano || !pano.complete || !sensorOn || !cameraShown() || document.hidden) return;
+  if (!autoAlignIn.checked || visionBusy || !(steady || moving) || !pano || !pano.complete || !sensorOn || !cameraShown() || document.hidden) return;
   if (visionHorizon !== pano.horizon) {
     visionHorizon = pano.horizon;
     visionWorker.postMessage({
@@ -1214,7 +1218,18 @@ function visionTick() {
   offsetPitchAtSend = offset.pitch;
   offsetHeadingAtSend = offset.heading;
   visionWorker.postMessage(
-    { type: 'frame', id: ++visionId, pixels, cols, rows, cam: { ...cam }, bodies: visionBodies() } satisfies VisionRequest,
+    {
+      type: 'frame',
+      id: ++visionId,
+      pixels,
+      cols,
+      rows,
+      cam: { ...cam },
+      bodies: visionBodies(),
+      offHeading: offset.heading,
+      offPitch: offset.pitch,
+      moving,
+    } satisfies VisionRequest,
     [pixels.buffer],
   );
 }

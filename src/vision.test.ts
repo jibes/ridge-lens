@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Camera } from './projection';
-import { detectBody, extractSkyline, matchPitch, matchSkyline, matchSkylineHaze, screenToDir, searchWindows, type BodyTarget } from './vision';
+import { SkylineAccumulator, detectBody, extractSkyline, matchPitch, matchSkyline, matchSkylineHaze, screenToDir, searchWindows, type BodyTarget } from './vision';
 import { project } from './projection';
 
 const AZ_STEP = 0.1;
@@ -345,5 +345,62 @@ describe('haze: far mountains invisible', () => {
     expect(m.ok).toBe(true);
     expect(m.band).toBe(0);
     expect(Math.abs(sensor.heading + m.dHeading - truth.heading)).toBeLessThan(0.3);
+  });
+});
+
+describe('panoramic accumulation', () => {
+  // Hügelland am See, unregelmäßig (keine Periodizität), Relief bis 0,7°
+  const hills = new Float32Array(3600).map((_, i) => {
+    const az = i / 10;
+    let el = 0.8;
+    for (const [c, w, a] of [[150, 6, 0.6], [171, 4, 0.4], [188, 9, 0.7], [204, 3, 0.3], [222, 7, 0.6], [241, 5, 0.5], [263, 8, 0.4]]) {
+      el += a * Math.exp(-(((az - c) / w) ** 2));
+    }
+    return el;
+  });
+  const OFFSET = 6; // Kompass zeigt 6° zu wenig
+
+  function feed(acc: SkylineAccumulator, headings: number[], offset = OFFSET) {
+    for (const h of headings) {
+      const t: Camera = { ...truth, heading: h, pitch: 1 };
+      const sensor: Camera = { ...t, heading: h - offset, pitch: 1.4 };
+      // Einzelbild: halb von Bäumen verdeckt, zu flach für den Kurs
+      const pts = skylinePoints(t, sensor, hills, { treesLeft: true, noSnow: true });
+      acc.add(pts, sensor, 0, 0, 0);
+    }
+  }
+
+  it('single frames fail, the accumulated profile recovers heading and pitch', () => {
+    const t: Camera = { ...truth, heading: 200, pitch: 1 };
+    const sensor: Camera = { ...t, heading: 200 - OFFSET, pitch: 1.4 };
+    expect(matchSkyline(skylinePoints(t, sensor, hills, { treesLeft: true, noSnow: true }), hills, AZ_STEP, sensor, COLS).ok).toBe(false);
+    const acc = new SkylineAccumulator();
+    feed(acc, [165, 185, 205, 225, 245]);
+    const m = acc.match([hills], AZ_STEP, 1);
+    expect(m.ok).toBe(true);
+    expect(Math.abs(m.heading - OFFSET)).toBeLessThan(0.5);
+    expect(Math.abs(m.pitch - -0.4)).toBeLessThan(0.15);
+  });
+
+  it('never accepts a wrong heading', () => {
+    for (const off of [-14, -7, 3, 11, 17]) {
+      const acc = new SkylineAccumulator();
+      feed(acc, [170, 190, 210, 230], off);
+      const m = acc.match([hills], AZ_STEP, 1);
+      if (m.ok) expect(Math.abs(m.heading - off)).toBeLessThan(0.5);
+    }
+  });
+
+  it('needs enough coverage and refuses a flat horizon', () => {
+    const few = new SkylineAccumulator();
+    feed(few, [200]);
+    expect(few.match([hills], AZ_STEP, 1).ok).toBe(false);
+    const flat = new SkylineAccumulator();
+    const level = new Float32Array(3600).fill(0.8);
+    for (const h of [165, 185, 205, 225, 245]) {
+      const t: Camera = { ...truth, heading: h, pitch: 1 };
+      flat.add(skylinePoints(t, t, level, { treesLeft: true, noSnow: true }), t, 0, 0, 0);
+    }
+    expect(flat.match([level], AZ_STEP, 1).ok).toBe(false);
   });
 });
