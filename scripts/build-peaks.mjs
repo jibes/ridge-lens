@@ -105,13 +105,15 @@ const metres = (a, b) => Math.hypot((a.lat - b.lat) * 111_195, (a.lon - b.lon) *
 const fold = (s) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().trim();
 
 /**
- * Doppeleinträge zusammenführen: Vulkan und Gipfel bzw. gleichnamige Einträge unter 300 m
- * (z. B. Kibo/Uhuru Peak). Es bleibt der bekanntere (Gleichstand: der Gipfelpunkt, er
+ * Doppeleinträge zusammenführen: Vulkan und Gipfel bzw. gleichnamige Einträge unter 300 m;
+ * bis 2 km, wenn sie gleich heißen oder (Vulkan und Gipfel) gleich hoch sind – der
+ * Vulkanpunkt liegt oft in der Kratermitte (Kibo/Uhuru Peak 1,4 km). Es bleibt der bekanntere (Gleichstand: der Gipfelpunkt, er
  * markiert die höchste Stelle); fehlende Höhe, Namen und Wikidata kommen vom anderen.
  * Verschiedene Gipfel gleicher Art mit eigenem Namen bleiben getrennt (Nebengipfel).
  */
 export function mergeDuplicates(rows, fameOf) {
-  const cell = (lat, lon) => `${Math.floor(lat / 0.005)}_${Math.floor(lon / 0.005)}`;
+  const C = 0.02; // Rasterweite (Grad) ≥ 2 km
+  const cell = (lat, lon) => `${Math.floor(lat / C)}_${Math.floor(lon / C)}`;
   const grid = new Map();
   for (const r of rows) {
     const k = cell(r.lat, r.lon);
@@ -123,14 +125,17 @@ export function mergeDuplicates(rows, fameOf) {
   const rank = (r) => fameOf(r) * 10 + (r.kind === 'peak' ? 1 : 0);
   for (const a of rows) {
     if (gone.has(a.id)) continue;
-    const ci = Math.floor(a.lat / 0.005);
-    const cj = Math.floor(a.lon / 0.005);
+    const ci = Math.floor(a.lat / C);
+    const cj = Math.floor(a.lon / C);
     for (let di = -1; di <= 1; di++) {
       for (let dj = -1; dj <= 1; dj++) {
         for (const b of grid.get(`${ci + di}_${cj + dj}`) ?? []) {
           if (b === a || gone.has(b.id) || gone.has(a.id)) continue;
-          const sameThing = a.kind !== b.kind || fold(a.name) === fold(b.name);
-          if (!sameThing || metres(a, b) > 300) continue;
+          const sameName = fold(a.name) === fold(b.name);
+          const mixed = a.kind !== b.kind;
+          const sameEle = a.ele !== null && b.ele !== null && Math.abs(a.ele - b.ele) <= 15;
+          const d = metres(a, b);
+          if (!(((mixed || sameName) && d <= 300) || ((sameName || (mixed && sameEle)) && d <= 2000))) continue;
           const [keep, drop] = rank(a) >= rank(b) ? [a, b] : [b, a];
           if (keep.ele === null) keep.ele = drop.ele;
           // Übersetzungen nur vom gleichnamigen Eintrag (sonst hieße Kibo auf Englisch "Uhuru Peak")

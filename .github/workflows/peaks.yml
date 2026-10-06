@@ -36,7 +36,7 @@ jobs:
       # Objektarten aus der Weltdatei (osmium tags-filter); Änderung löst neuen Auszug aus
       PEAKS_OSM_FILTER: n/natural=peak,volcano
       # Verarbeitung des Auszugs geändert (z. B. Doppeleinträge zusammenführen): hochzählen
-      PEAKS_EXTRACT_REV: '2'
+      PEAKS_EXTRACT_REV: '3'
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
