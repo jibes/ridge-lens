@@ -611,10 +611,13 @@ function drawPeaks(
     const wName = ctx.measureText(name).width;
     ctx.font = metaFont;
     const wMeta = ctx.measureText(meta).width;
-    const len = wName + 6 + wMeta;
+    // Wenig Platz über dem Horizont (Querformat, Gerät nach unten geneigt): erst nur den
+    // Namen, reicht auch das nicht, Text unter den Gipfel
+    const room = y - labelTop - 14;
+    const showMeta = wName + 6 + wMeta <= room || wName > room;
+    const len = showMeta ? wName + 6 + wMeta : wName;
+    const below = len > room && cam.height - (opts.bottomInset ?? 0) - y > len + 24;
     // Text oben bündig (liest von unten nach oben); Leitlinie vom Gipfel bis zum Textende
-    // Horizont dicht am oberen Rand (Gerät stark nach unten geneigt): Text unter dem Gipfel
-    const below = y - labelTop < len + 14 && cam.height - y > len + 24;
     const dayTop = Math.max(labelTop + 10, Math.min(y - 10, labelTop + len + 4));
     const top = below ? y + 14 + len : dayTop + (Math.max(dayTop, y - 14) - dayTop) * nf;
     ctx.globalAlpha = selected ? 1 : 1 - 0.45 * nf;
@@ -639,10 +642,12 @@ function drawPeaks(
     ctx.strokeText(name, 0, 0);
     ctx.fillStyle = selected ? pal.accent : peak.visible ? pal.text : pal.hidden;
     ctx.fillText(name, 0, 0);
-    ctx.font = metaFont;
-    ctx.strokeText(meta, wName + 6, 0.5);
-    ctx.fillStyle = peak.visible || selected ? pal.textMuted : pal.hidden;
-    ctx.fillText(meta, wName + 6, 0.5);
+    if (showMeta) {
+      ctx.font = metaFont;
+      ctx.strokeText(meta, wName + 6, 0.5);
+      ctx.fillStyle = peak.visible || selected ? pal.textMuted : pal.hidden;
+      ctx.fillText(meta, wName + 6, 0.5);
+    }
     ctx.restore();
   }
   ctx.globalAlpha = 1;
