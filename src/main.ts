@@ -108,6 +108,31 @@ let legacyOffset = false;
 const offset = loadOffset();
 /** Magnetische Missweisung am Standort (Grad, Ost positiv). */
 let declination = 0;
+/**
+ * Manuelle Korrektur (Ziehen, Übernehmen, Zoomen) getrennt von der automatischen am
+ * Bild: wird zurückgesetzt, sobald der manuelle Modus aus ist.
+ */
+const MANUAL_ADJ_KEY = 'ridge-lens-manual-adj';
+const manualAdj = loadManualAdj();
+function loadManualAdj(): { heading: number; pitch: number; fov: number } {
+  try {
+    const o = JSON.parse(localStorage.getItem(MANUAL_ADJ_KEY) ?? '');
+    if (Number.isFinite(o.heading) && Number.isFinite(o.pitch) && o.fov > 0) return o;
+  } catch {
+    /* keine */
+  }
+  return { heading: 0, pitch: 0, fov: 1 };
+}
+function saveManualAdj() {
+  try {
+    localStorage.setItem(MANUAL_ADJ_KEY, JSON.stringify(manualAdj));
+  } catch {
+    /* kein Speicher */
+  }
+}
+/** Gesamtkorrektur (automatisch + manuell). */
+const totalHeadingOffset = () => deltaDeg(offset.heading + manualAdj.heading, 0);
+const totalPitchOffset = () => offset.pitch + manualAdj.pitch;
 
 function loadOffset(): { heading: number; pitch: number } {
   try {
@@ -125,11 +150,12 @@ function loadOffset(): { heading: number; pitch: number } {
 /** Woher eine Korrektur kam (für das Protokoll in den Sensordetails). */
 type OffsetSource = 'drag' | 'apply' | 'legacy' | 'reset' | 'fov' | VisionResponse['source'];
 const corrLog: { t: number; src: OffsetSource; dh: number; dp: number; h: number; p: number }[] = [];
-let loggedOffset = { ...offset };
+let loggedOffset = { heading: totalHeadingOffset(), pitch: totalPitchOffset() };
 
 function saveOffset(src: OffsetSource) {
-  const dh = deltaDeg(offset.heading, loggedOffset.heading);
-  const dp = offset.pitch - loggedOffset.pitch;
+  const cur = { heading: totalHeadingOffset(), pitch: totalPitchOffset() };
+  const dh = deltaDeg(cur.heading, loggedOffset.heading);
+  const dp = cur.pitch - loggedOffset.pitch;
   if (Math.abs(dh) >= 0.05 || Math.abs(dp) >= 0.05) {
     const now = Date.now();
     const last = corrLog[corrLog.length - 1];
@@ -138,14 +164,15 @@ function saveOffset(src: OffsetSource) {
       last.dh += dh;
       last.dp += dp;
       last.t = now;
-      last.h = offset.heading;
-      last.p = offset.pitch;
+      last.h = cur.heading;
+      last.p = cur.pitch;
     } else {
-      corrLog.push({ t: now, src, dh, dp, h: offset.heading, p: offset.pitch });
+      corrLog.push({ t: now, src, dh, dp, h: cur.heading, p: cur.pitch });
       if (corrLog.length > 8) corrLog.shift();
     }
-    loggedOffset = { ...offset };
+    loggedOffset = cur;
   }
+  saveManualAdj();
   try {
     localStorage.setItem(OFFSET_KEY, JSON.stringify({ ...offset, v: 2 }));
   } catch {
@@ -426,13 +453,11 @@ function clampFov(f: number) {
  * vorgegeben, dann kalibriert die Geste den Bildwinkel (bis Gipfel und Linien passen).
  */
 function zoomBy(factor: number) {
-  const size = cameraFeed.size;
   if (cameraShown()) {
     // Bildwinkel kalibriert sich am Bild; von Hand nur im manuellen Modus
     if (!manualCal) return;
-    const target = cam.hfov * factor;
-    cameraFov = Math.min(120, Math.max(30, fovLongFromDisplay(target, size.w, size.h, cam.width, cam.height)));
-    saveCameraFov();
+    manualAdj.fov = Math.min(2, Math.max(0.5, manualAdj.fov * factor));
+    saveManualAdj();
   } else {
     cam.hfov = clampFov(cam.hfov * factor);
   }
@@ -442,8 +467,8 @@ function zoomBy(factor: number) {
 function rotateBy(dHeading: number, dPitch: number) {
   if (sensorOn) {
     if (!manualCal) return;
-    offset.heading = deltaDeg(offset.heading + dHeading, 0);
-    offset.pitch = Math.max(-20, Math.min(20, offset.pitch + dPitch));
+    manualAdj.heading = deltaDeg(manualAdj.heading + dHeading, 0);
+    manualAdj.pitch = Math.max(-20, Math.min(20, manualAdj.pitch + dPitch));
     saveOffset('drag');
   } else {
     cam.heading = normalizeDeg(cam.heading + dHeading);
@@ -588,10 +613,10 @@ alignApply.addEventListener('click', () => {
   const a = tracker.angles;
   if (sensorOn && a) {
     // Korrektur so, dass Gipfel bzw. Sonne/Mond genau im Fadenkreuz liegen
-    offset.heading = deltaDeg(sel.az, trueHeading(a.heading));
-    offset.pitch = Math.max(-20, Math.min(20, sel.angle - a.pitch));
+    manualAdj.heading = deltaDeg(sel.az, trueHeading(a.heading) + offset.heading);
+    manualAdj.pitch = Math.max(-20, Math.min(20, sel.angle - a.pitch - offset.pitch));
     saveOffset('apply');
-    const correction = fmtSigned(offset.heading);
+    const correction = fmtSigned(manualAdj.heading);
     setStatus(() => t('align.done', { name: sel.name, offset: correction }));
   } else if (!sensorOn) {
     cam.heading = sel.az;
@@ -914,14 +939,15 @@ function syncSensor() {
     cam.roll = 0;
     return;
   }
-  cam.heading = normalizeDeg(trueHeading(a.heading) + offset.heading);
-  cam.pitch = a.pitch + offset.pitch;
+  cam.heading = normalizeDeg(trueHeading(a.heading) + totalHeadingOffset());
+  cam.pitch = a.pitch + totalPitchOffset();
   cam.roll = a.roll;
   const dir = compassLabels(16)[Math.round(cam.heading / 22.5) % 16];
-  const corrected = Math.abs(offset.heading) >= 0.05 || Math.abs(offset.pitch) >= 0.05;
+  // Nur die eigene (manuelle) Kurskorrektur anzeigen, und nur wenn vorhanden
+  const corrected = manualCal && Math.abs(manualAdj.heading) >= 0.05;
   sensorText.textContent =
     `${dir} ${cam.heading.toFixed(0)}°` +
-    (corrected ? ` · ${t('sensor.corrected', { offset: fmtSigned(offset.heading) })}` : '') +
+    (corrected ? ` · ${t('sensor.corrected', { offset: fmtSigned(manualAdj.heading) })}` : '') +
     (tracker.status === 'relative' ? ` · ${t('sensor.noCompass')}` : '') +
     (performance.now() - lastMatchAt < 3000
       ? ` · ${t(({ skyline: 'sensor.matched', pitch: 'sensor.matchedPitch', pano: 'sensor.matchedPano', fov: 'sensor.matchedFov', sun: 'sensor.matchedSun', moon: 'sensor.matchedMoon' } as const)[lastMatchSource])}`
@@ -933,7 +959,7 @@ const noiseEl = $<HTMLParagraphElement>('sensor-noise');
 function updateNoise() {
   const camRow = manualCal && cameraShown() && panel.hidden === false;
   cameraFovRow.hidden = !camRow;
-  if (camRow) cameraFovText.textContent = t('settings.cameraFov', { fov: cameraFov.toFixed(1) });
+  if (camRow) cameraFovText.textContent = t('settings.cameraFov', { fov: (cameraFov * manualAdj.fov).toFixed(1) });
   const n = sensorOn && panel.hidden === false ? tracker.noise : null;
   noiseEl.hidden = !n;
   if (n) noiseEl.textContent = t('settings.noise', { h: n.heading.toFixed(1), p: n.pitch.toFixed(1), r: n.roll.toFixed(1) });
@@ -954,7 +980,7 @@ const SOURCE_KEYS = {
   reset: 'log.reset',
 } as const;
 function showCorrLog() {
-  const head = t('log.title', { h: fmtSigned(offset.heading), p: fmtSigned(offset.pitch) });
+  const head = t('log.title', { h: fmtSigned(totalHeadingOffset()), p: fmtSigned(totalPitchOffset()) });
   const time = (ms: number) => new Date(ms).toLocaleTimeString(lang(), { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const lines = corrLog
     .slice()
@@ -986,6 +1012,7 @@ function startSensors() {
 $<HTMLButtonElement>('offset-reset').addEventListener('click', () => {
   offset.heading = 0;
   offset.pitch = 0;
+  Object.assign(manualAdj, { heading: 0, pitch: 0, fov: 1 });
   saveOffset('reset');
   requestRender();
 });
@@ -1118,7 +1145,7 @@ function cameraShown(): boolean {
 function syncCameraFov() {
   if (!cameraShown()) return;
   const { w, h } = cameraFeed.size;
-  cam.hfov = displayHfov(cameraFov, w, h, cam.width, cam.height);
+  cam.hfov = displayHfov(Math.min(120, cameraFov * manualAdj.fov), w, h, cam.width, cam.height);
 }
 
 async function setCamera(on: boolean, remember = true) {
@@ -1219,6 +1246,8 @@ cameraSelect.addEventListener('change', async () => {
   // Andere Kamera, anderer Bildwinkel: Kalibrierung neu beginnen
   cameraFov = DEFAULT_CAMERA_FOV;
   saveCameraFov();
+  manualAdj.fov = 1;
+  saveManualAdj();
   if (cameraWanted) {
     cameraFeed.stop();
     await setCamera(true, false);
@@ -1230,6 +1259,8 @@ const cameraFovText = $<HTMLSpanElement>('camera-fov');
 $<HTMLButtonElement>('camera-fov-reset').addEventListener('click', () => {
   cameraFov = DEFAULT_CAMERA_FOV;
   saveCameraFov();
+  manualAdj.fov = 1;
+  saveManualAdj();
   requestRender();
 });
 
@@ -1249,6 +1280,12 @@ manualTools.hidden = !manualCal;
 manualCalIn.addEventListener('change', () => {
   manualCal = manualCalIn.checked;
   manualTools.hidden = !manualCal;
+  // Ausschalten verwirft alles von Hand Eingestellte; die Bildkorrektur bleibt
+  if (!manualCal) {
+    Object.assign(manualAdj, { heading: 0, pitch: 0, fov: 1 });
+    saveOffset('reset');
+    requestRender();
+  }
   try {
     localStorage.setItem(MANUAL_CAL_KEY, manualCal ? 'on' : 'off');
   } catch {
@@ -1316,8 +1353,8 @@ function visionTick() {
   visionCtx.drawImage(videoEl, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, cols, rows);
   const pixels = visionCtx.getImageData(0, 0, cols, rows).data;
   visionBusy = true;
-  offsetPitchAtSend = offset.pitch;
-  offsetHeadingAtSend = offset.heading;
+  offsetPitchAtSend = totalPitchOffset();
+  offsetHeadingAtSend = totalHeadingOffset();
   visionWorker.postMessage(
     {
       type: 'frame',
@@ -1327,8 +1364,8 @@ function visionTick() {
       rows,
       cam: { ...cam },
       bodies: visionBodies(),
-      offHeading: offset.heading,
-      offPitch: offset.pitch,
+      offHeading: totalHeadingOffset(),
+      offPitch: totalPitchOffset(),
       moving,
     } satisfies VisionRequest,
     [pixels.buffer],
@@ -1376,9 +1413,9 @@ function calibrateFromTilt(match: MatchResult, snap: Camera): boolean {
   if (!fit) return false;
   const { w, h } = cameraFeed.size;
   const hfov = (2 * Math.atan(Math.tan((snap.hfov / 2) * (Math.PI / 180)) * fit.scale) * 180) / Math.PI;
-  cameraFov = Math.min(120, Math.max(30, fovLongFromDisplay(hfov, w, h, snap.width, snap.height)));
+  cameraFov = Math.min(120, Math.max(30, fovLongFromDisplay(hfov, w, h, snap.width, snap.height) / manualAdj.fov));
   saveCameraFov();
-  offset.pitch = Math.max(-20, Math.min(20, fit.pitch));
+  offset.pitch = Math.max(-20, Math.min(20, fit.pitch - manualAdj.pitch));
   saveOffset('fov');
   tiltSamples = [];
   return true;
@@ -1405,7 +1442,7 @@ visionWorker.onmessage = (ev: MessageEvent<VisionResponse>) => {
   if (source === 'skyline') {
     const { w, h } = cameraFeed.size;
     const hfov = snap.hfov * (1 + VISION_GAIN * (match.fovScale - 1));
-    cameraFov = Math.min(120, Math.max(30, fovLongFromDisplay(hfov, w, h, snap.width, snap.height)));
+    cameraFov = Math.min(120, Math.max(30, fovLongFromDisplay(hfov, w, h, snap.width, snap.height) / manualAdj.fov));
     saveCameraFov();
   }
   lastMatchAt = performance.now();
