@@ -1076,10 +1076,41 @@ async function setCamera(on: boolean, remember = true) {
 cameraBtn.addEventListener('click', () => void setCamera(!cameraWanted));
 videoEl.addEventListener('loadedmetadata', requestRender);
 videoEl.addEventListener('resize', requestRender);
-// Nach Rückkehr in den Vordergrund ist der Kamerastrom oft beendet
+/**
+ * Im Hintergrund Kamera freigeben, im Vordergrund neu öffnen: Android lässt den Strom
+ * sonst oft formal "live", liefert aber keine Bilder mehr (Standbild).
+ */
+let cameraRestart: Promise<void> | null = null;
+function restartCamera() {
+  if (cameraRestart || !cameraWanted || document.hidden) return;
+  cameraFeed.stop();
+  cameraRestart = setCamera(true, false).finally(() => (cameraRestart = null));
+}
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && cameraWanted && !cameraFeed.active) void setCamera(true, false);
+  if (!cameraWanted) return;
+  if (document.hidden) cameraFeed.stop();
+  else restartCamera();
 });
+window.addEventListener('pageshow', (e) => {
+  if (e.persisted) restartCamera();
+});
+// Wächter: steht das Videobild trotz sichtbarer Seite, Kamera neu starten
+let lastVideoTime = -1;
+let stalledTicks = 0;
+setInterval(() => {
+  if (!cameraWanted || document.hidden || cameraRestart) {
+    stalledTicks = 0;
+    return;
+  }
+  const t = videoEl.currentTime;
+  stalledTicks = t === lastVideoTime || !cameraFeed.active ? stalledTicks + 1 : 0;
+  lastVideoTime = t;
+  if (videoEl.paused) void videoEl.play().catch(() => {});
+  if (stalledTicks >= 2) {
+    stalledTicks = 0;
+    restartCamera();
+  }
+}, 1500);
 
 /** Kamera-Auswahl in den Einstellungen (nur bei mehreren Rückkameras). */
 const cameraSelect = $<HTMLSelectElement>('camera-select');
