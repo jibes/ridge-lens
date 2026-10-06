@@ -63,6 +63,10 @@ describe('astro', () => {
     expect(flat.rise).not.toBeNull();
     expect(ridge.rise! - flat.rise!).toBeGreaterThan(50 * 60_000);
     expect(flat.set! - ridge.set!).toBeGreaterThan(50 * 60_000);
+    // Silhouette im Westen noch nicht berechnet: kein Untergang statt ungültiger Zeit
+    const partial = terrainEvents(path, (az) => (az > 180 ? NaN : 0));
+    expect(partial.rise).not.toBeNull();
+    expect(partial.set).toBeNull();
     // Tag-und-Nacht-Gleiche: ≈ 12 h über dem flachen Horizont (Refraktion verlängert leicht)
     expect((flat.set! - flat.rise!) / 3_600_000).toBeCloseTo(12.1, 0);
   });

@@ -386,3 +386,72 @@ export function detectBody(
   const dHeading = ((((body.az - az) % 360) + 540) % 360) - 180;
   return { ok: true, dHeading, dPitch: body.alt - el, fovScale: 1, cost: 0 };
 }
+
+/**
+ * Nur die Neigung abgleichen, wenn der volle Abgleich scheitert – etwa weil Bäume die
+ * halbe Silhouette verdecken oder der Horizont zu flach für den Kurs ist. Zulässig nur,
+ * wo der berechnete Horizont auf ±3° Kurs kaum variiert (ein Kursfehler verfälscht die
+ * Neigung dann nicht). Verlangt eine dichte, breite Gruppe von Bildpunkten mit gleicher
+ * Höhenabweichung; Ausreißer (Baumkronen, Wolken) bleiben außen vor.
+ */
+export function matchPitch(
+  points: { x: number; y: number }[],
+  horizon: ArrayLike<number>,
+  azStep: number,
+  cam: Camera,
+  totalColumns: number,
+): MatchResult {
+  const fail = (reason: MatchResult['reason']): MatchResult => ({ ok: false, dHeading: 0, dPitch: 0, fovScale: 1, cost: Infinity, reason });
+  const minPoints = Math.max(0.15 * totalColumns, 12);
+  if (points.length < minPoints) return fail('few-columns');
+  const pts = points.map((p) => {
+    const [az, el] = screenToDir(cam, p.x, p.y);
+    const model = horizonAt(horizon, azStep, az);
+    const shift = Math.max(Math.abs(horizonAt(horizon, azStep, az + 3) - model), Math.abs(horizonAt(horizon, azStep, az - 3) - model));
+    return { x: p.x, r: model - el, model, shift };
+  });
+  // Kursunabhängig? Median der Änderung bei ±3° Kurs
+  const shifts = pts.map((p) => p.shift).sort((a, b) => a - b);
+  if (shifts[shifts.length >> 1] > 0.35) return fail('ambiguous');
+
+  // Dichteste Gruppe gleicher Abweichung (±0,25°)
+  const cluster = (center: number) => pts.filter((p) => Math.abs(p.r - center) < 0.25);
+  let best: typeof pts = [];
+  for (const p of pts) {
+    const c = cluster(p.r);
+    if (c.length > best.length) best = c;
+  }
+  if (best.length < Math.max(minPoints, 0.4 * pts.length)) return fail('poor-fit');
+  const mean = best.reduce((s, p) => s + p.r, 0) / best.length;
+  const std = Math.sqrt(best.reduce((s, p) => s + (p.r - mean) ** 2, 0) / best.length);
+  const xs = best.map((p) => p.x);
+  if (std > 0.15 || Math.max(...xs) - Math.min(...xs) < 0.25 * cam.width || Math.abs(mean) > 2) return fail('poor-fit');
+  // Gerade Kante (Dach, Mauer) vor geformtem Gelände: Bildkante über alle Spalten schnurgerade,
+  // Modell nicht → kein Horizont (Baumkronen machen die echte Bildkante dagegen unruhig)
+  const allX = pts.map((p) => p.x);
+  const lineStd = (ys: number[], xs = allX) => {
+    const n = ys.length;
+    const mx = xs.reduce((a, b) => a + b, 0) / n;
+    const my = ys.reduce((a, b) => a + b, 0) / n;
+    let sxy = 0;
+    let sxx = 0;
+    for (let i = 0; i < n; i++) {
+      sxy += (xs[i] - mx) * (ys[i] - my);
+      sxx += (xs[i] - mx) ** 2;
+    }
+    const k = sxx ? sxy / sxx : 0;
+    return Math.sqrt(ys.reduce((s, y, i) => s + (y - my - k * (xs[i] - mx)) ** 2, 0) / n);
+  };
+  const modelShape = lineStd(pts.map((p) => p.model));
+  const imageShape = lineStd(pts.map((p) => p.model - p.r));
+  // Abtastrauschen der Kante ≈ 0,05°; echte Silhouetten folgen dem Modell, Kanten nicht
+  if (modelShape > 0.04 && imageShape < 0.5 * modelShape) return fail('poor-fit');
+  // Eindeutig: keine zweite, ähnlich große Gruppe mit anderer Abweichung
+  let rival = 0;
+  for (const p of pts) {
+    if (Math.abs(p.r - mean) < 0.6) continue;
+    rival = Math.max(rival, cluster(p.r).filter((q) => Math.abs(q.r - mean) >= 0.6).length);
+  }
+  if (rival > 0.6 * best.length) return fail('ambiguous');
+  return { ok: true, dHeading: 0, dPitch: mean, fovScale: 1, cost: std };
+}

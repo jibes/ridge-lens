@@ -182,7 +182,7 @@ function render() {
     bottomInset: view.getBoundingClientRect().bottom - (targetChip.hidden ? dockEl : targetChip).getBoundingClientRect().top + 8,
     peakName,
     compass: compassLabels(8),
-    sky,
+    sky: visibleSky(),
     night,
     // Skala und Labels unterhalb der Statuszeile beginnen
     topInset: statusEl.getBoundingClientRect().bottom - view.getBoundingClientRect().top,
@@ -597,6 +597,7 @@ function updateSky() {
     { kind: 'sun', az: sun.az, alt: sun.alt, path: bodyPath(sunPosition, lat, lon, start, end, 10) },
     { kind: 'moon', az: moon.az, alt: moon.alt, fraction: moon.fraction, sunAz: sun.az, sunAlt: sun.alt, path: bodyPath(moonPosition, lat, lon, start, end, 10) },
   ];
+  skyNow = now.getTime();
   const p = pano;
   const horizonAt = (az: number) => (p ? p.horizon[Math.round(az / p.azStep) % p.horizon.length] : 0);
   skyEvents = {
@@ -670,6 +671,19 @@ $<HTMLButtonElement>('sky-now').addEventListener('click', () => {
   skyTimeIn.value = toLocalInput(Date.now());
   updateSky();
 });
+
+/** Zeitpunkt, für den `sky` berechnet wurde. */
+let skyNow = Date.now();
+
+/**
+ * Bahnen zum Zeichnen: ohne gewählte Zeit nur der Rest des Tages (vergangene Stunden
+ * würden z. B. abends die Morgenbahn quer über den Osthimmel legen); ganze Bahn bei
+ * gewählter Zeit oder wenn Sonne/Mond angetippt ist.
+ */
+function visibleSky(): SkyBody[] {
+  if (skyTime !== null) return sky;
+  return sky.map((b) => (b.kind === selectedSky ? b : { ...b, path: b.path.filter((p) => p.t >= skyNow - 10 * 60_000) }));
+}
 
 function fmtTime(t: number | null): string {
   return t === null ? '–' : new Date(t).toLocaleTimeString(lang(), { hour: '2-digit', minute: '2-digit' });
@@ -854,7 +868,7 @@ function syncSensor() {
     (corrected ? ` · ${t('sensor.corrected', { offset: fmtSigned(offset.heading) })}` : '') +
     (tracker.status === 'relative' ? ` · ${t('sensor.noCompass')}` : '') +
     (performance.now() - lastMatchAt < 3000
-      ? ` · ${lastMatchSource === 'skyline' ? t('sensor.matched') : t(lastMatchSource === 'sun' ? 'sensor.matchedSun' : 'sensor.matchedMoon')}`
+      ? ` · ${t(({ skyline: 'sensor.matched', pitch: 'sensor.matchedPitch', sun: 'sensor.matchedSun', moon: 'sensor.matchedMoon' } as const)[lastMatchSource])}`
       : '');
 }
 

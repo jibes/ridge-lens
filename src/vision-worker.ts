@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 // Bildabgleich im Hintergrund, damit die Anzeige flüssig bleibt.
 import type { Camera } from './projection';
-import { detectBody, extractSkyline, matchSkyline, searchWindows, type BodyTarget, type MatchResult } from './vision';
+import { detectBody, extractSkyline, matchPitch, matchSkyline, searchWindows, type BodyTarget, type MatchResult } from './vision';
 
 export type VisionRequest =
   | { type: 'horizon'; horizon: Float32Array; azStep: number }
@@ -12,7 +12,7 @@ export interface VisionResponse {
   cam: Camera;
   match: MatchResult;
   /** Woran ausgerichtet wurde; Sonne/Mond liefern keinen Bildwinkel. */
-  source: 'skyline' | BodyTarget['kind'];
+  source: 'skyline' | 'pitch' | BodyTarget['kind'];
 }
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -43,6 +43,12 @@ self.onmessage = (ev: MessageEvent<VisionRequest>) => {
         self.postMessage({ id: msg.id, cam, match: m, source: body.kind } satisfies VisionResponse);
         return;
       }
+    }
+    // Silhouette nur teilweise frei (Bäume) oder zu flach für den Kurs: wenigstens die Neigung
+    const pitch = matchPitch(points, horizon, azStep, cam, cols);
+    if (pitch.ok) {
+      self.postMessage({ id: msg.id, cam, match: pitch, source: 'pitch' } satisfies VisionResponse);
+      return;
     }
   }
   self.postMessage({ id: msg.id, cam, match, source: 'skyline' } satisfies VisionResponse);

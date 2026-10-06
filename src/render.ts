@@ -125,7 +125,7 @@ export interface SkyBody {
   fraction?: number;
   sunAz?: number;
   sunAlt?: number;
-  /** Bahn des Tages (lokale Mitternacht bis Mitternacht). */
+  /** Gezeichnete Bahn: Rest des Tages ab jetzt, bzw. ganzer Tag bei gewählter Zeit oder Auswahl. */
   path: PathPoint[];
 }
 

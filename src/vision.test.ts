@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Camera } from './projection';
-import { detectBody, extractSkyline, matchSkyline, screenToDir, searchWindows, type BodyTarget } from './vision';
+import { detectBody, extractSkyline, matchPitch, matchSkyline, screenToDir, searchWindows, type BodyTarget } from './vision';
 import { project } from './projection';
 
 const AZ_STEP = 0.1;
@@ -38,7 +38,7 @@ function noise(a: number) {
 function renderImage(
   cam: Camera,
   horizon: Float32Array,
-  opts: { fog?: boolean; treeline?: number; clouds?: boolean; highClouds?: boolean; straightEdge?: boolean; testPattern?: boolean } = {},
+  opts: { fog?: boolean; treeline?: number; clouds?: boolean; highClouds?: boolean; straightEdge?: boolean; testPattern?: boolean; treesLeft?: boolean } = {},
 ): Uint8ClampedArray {
   const img = new Uint8ClampedArray(COLS * ROWS * 4);
   for (let r = 0; r < ROWS; r++) {
@@ -53,6 +53,7 @@ function renderImage(
       else if (opts.straightEdge) rgb = y < H * 0.45 + (x - W / 2) * 0.05 ? [120, 170, 230] : [90, 80, 70]; // Hausdach vor Himmel
       else if (opts.testPattern) rgb = Math.hypot(x - 200, y - 380) < 150 ? [230, 230, 230] : (Math.floor(y / 120) % 2 ? [0, 140, 0] : [0, 110, 0]);
       else if (opts.treeline !== undefined && el < opts.treeline) rgb = [40, 60, 35]; // Wald im Vordergrund
+      else if (opts.treesLeft && x < W * 0.5 && el < hz + 4 + 2 * Math.sin(x * 0.11) + Math.sin(x * 0.37)) rgb = [45, 70, 40]; // Baumkronen links bis über den Horizont
       else if (el > hz && opts.clouds && Math.sin(az * 0.9) + Math.sin(el * 2.3 + az * 0.2) > 1.2) rgb = [225, 228, 232]; // Wolken bis an den Grat
       else if (el > hz + 1 && opts.highClouds && Math.sin(az * 0.9) + Math.sin(el * 2.3 + az * 0.2) > 0.8) rgb = [225, 228, 232]; // Wolken über den Gipfeln
       else if (el > hz) rgb = [110 + r * 0.2, 160 + r * 0.15, 225];
@@ -224,5 +225,69 @@ describe('sun and moon as reference', () => {
   it('nothing bright → no correction', () => {
     const img = renderSky(truth, horizon, []);
     expect(detectBody(img, COLS, ROWS, sensor, sun, horizon, AZ_STEP).ok).toBe(false);
+  });
+});
+
+/** Sanfte Hügel (Seeufer): Kurs kaum bestimmbar, Neigung schon. */
+function gentleHorizon(): Float32Array {
+  return new Float32Array(3600).map((_, i) => 0.5 + 0.12 * Math.sin((i / 10) * 0.25) + 0.05 * Math.sin((i / 10) * 1.3));
+}
+
+function skylinePoints(truth: Camera, sensor: Camera, horizon: Float32Array, opts: Parameters<typeof renderImage>[2]) {
+  const img = renderImage(truth, horizon, opts);
+  const sky = extractSkyline(img, COLS, ROWS, searchWindows(sensor, horizon, AZ_STEP, COLS, ROWS));
+  const points: { x: number; y: number }[] = [];
+  for (let c = 0; c < COLS; c++) if (!Number.isNaN(sky.y[c])) points.push({ x: ((c + 0.5) * W) / COLS, y: (sky.y[c] * H) / ROWS });
+  return points;
+}
+
+describe('pitch-only alignment', () => {
+  it('recovers pitch from a partly hidden, gentle horizon (trees left)', () => {
+    const horizon = gentleHorizon();
+    const sensor: Camera = { ...truth, heading: truth.heading + 3, pitch: truth.pitch + 1.5 };
+    const points = skylinePoints(truth, sensor, horizon, { treesLeft: true });
+    expect(matchSkyline(points, horizon, AZ_STEP, sensor, COLS).ok).toBe(false);
+    const m = matchPitch(points, horizon, AZ_STEP, sensor, COLS);
+    expect(m.ok).toBe(true);
+    expect(m.dHeading).toBe(0);
+    expect(Math.abs(sensor.pitch + m.dPitch - truth.pitch)).toBeLessThan(0.15);
+  });
+
+  it('refuses where the heading matters (structured mountains)', () => {
+    const horizon = mountainHorizon();
+    const sensor: Camera = { ...truth, heading: truth.heading + 4, pitch: truth.pitch + 1 };
+    const m = matchPitch(skylinePoints(truth, sensor, horizon, { treesLeft: true }), horizon, AZ_STEP, sensor, COLS);
+    expect(m.ok).toBe(false);
+  });
+
+  it('refuses a straight roof edge in front of rolling terrain', () => {
+    // Wellig, aber kursunabhängig genug für den Neigungsabgleich
+    const horizon = new Float32Array(3600).map((_, i) => 0.6 + 0.4 * Math.sin((i / 10) * 0.15));
+    const sensor: Camera = { ...truth, pitch: truth.pitch + 1 };
+    const real = matchPitch(skylinePoints(truth, sensor, horizon, { treesLeft: true }), horizon, AZ_STEP, sensor, COLS);
+    expect(real.ok).toBe(true);
+    expect(Math.abs(sensor.pitch + real.dPitch - truth.pitch)).toBeLessThan(0.15);
+    for (const frac of [0.48, 0.5, 0.52]) {
+      const img = new Uint8ClampedArray(COLS * ROWS * 4);
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+          const x = ((c + 0.5) * W) / COLS;
+          const y = ((r + 0.5) * H) / ROWS;
+          const rgb = y < H * frac + (x - W / 2) * 0.05 ? [120, 170, 230] : [90, 80, 70];
+          img.set([rgb[0] + noise(4), rgb[1] + noise(4), rgb[2] + noise(4), 255], (r * COLS + c) * 4);
+        }
+      }
+      const sky = extractSkyline(img, COLS, ROWS, searchWindows(truth, horizon, AZ_STEP, COLS, ROWS));
+      const points: { x: number; y: number }[] = [];
+      for (let c = 0; c < COLS; c++) if (!Number.isNaN(sky.y[c])) points.push({ x: ((c + 0.5) * W) / COLS, y: (sky.y[c] * H) / ROWS });
+      expect(matchPitch(points, horizon, AZ_STEP, truth, COLS).ok).toBe(false);
+    }
+  });
+
+  it('refuses fog, test pattern and too few points', () => {
+    const horizon = gentleHorizon();
+    for (const opts of [{ fog: true }, { testPattern: true }, { treeline: 12 }]) {
+      expect(matchPitch(skylinePoints(truth, truth, horizon, opts), horizon, AZ_STEP, truth, COLS).ok).toBe(false);
+    }
   });
 });

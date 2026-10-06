@@ -197,7 +197,8 @@ export function terrainEvents(path: PathPoint[], horizonAt: (az: number) => numb
     const b = path[i];
     const da = a.alt - horizonAt(a.az);
     const db = b.alt - horizonAt(b.az);
-    if ((da < 0) === (db < 0)) continue;
+    // Silhouette dort noch nicht berechnet (NaN): kein Ereignis
+    if (!Number.isFinite(da) || !Number.isFinite(db) || (da < 0) === (db < 0)) continue;
     const t = a.t + ((b.t - a.t) * da) / (da - db);
     if (da < 0) rise ??= t;
     else set = t;
