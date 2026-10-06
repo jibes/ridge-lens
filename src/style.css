@@ -28,6 +28,20 @@
     --shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
   }
 }
+/* Nachts immer dunkles Schema, gedämpft und rötlich (Augen bleiben dunkeladaptiert) */
+body.night-ui {
+  --bg: #050709;
+  --fg: #c9b9b4;
+  --muted: #7d706c;
+  --surface: rgba(14, 16, 20, 0.72);
+  --surface-strong: rgba(14, 16, 20, 0.96);
+  --border: rgba(201, 185, 180, 0.12);
+  --input-bg: rgba(201, 185, 180, 0.06);
+  --accent: #a8402f;
+  --on-accent: #f1ddd8;
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  color-scheme: dark;
+}
 
 * {
   box-sizing: border-box;
@@ -113,7 +127,7 @@ body {
 .toast,
 .readout,
 .dock,
-.layers,
+.layers-menu,
 .sheet {
   background: var(--surface);
   color: var(--fg);
@@ -506,35 +520,56 @@ form details.more {
   font-variant-numeric: tabular-nums;
 }
 
-/* Nachts gedämpft */
-body.night-ui .pill,
-body.night-ui .toast,
-body.night-ui .readout,
-body.night-ui .dock,
-body.night-ui .layers,
-body.night-ui .sheet {
-  filter: brightness(0.55);
-}
+/* Nachts gedämpft: Overlay etwas dunkler */
 body.night-ui #view {
   filter: brightness(0.75);
 }
 
-/* Ebenen-Schalter rechts */
-.layers {
+/* Ebenen-Menü über der Bedienleiste */
+.layers-menu {
   position: absolute;
-  right: calc(env(safe-area-inset-right, 0px) + 10px);
-  top: 50%;
-  transform: translateY(-50%);
+  bottom: calc(var(--safe-bottom) + 84px);
+  left: 50%;
+  transform: translateX(-50%);
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 4px;
-  border-radius: 999px;
+  gap: 2px;
+  padding: 6px;
+  border-radius: 18px;
+  min-width: 220px;
+  animation: sheet-in 0.14s ease-out;
 }
-.layers .icon-btn[aria-pressed='true'] {
+.layer-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 12px;
   background: transparent;
-  color: var(--fg);
+  padding: 10px 12px;
+  text-align: left;
 }
-.layers .icon-btn[aria-pressed='false'] {
-  opacity: 0.4;
+.layer-item svg {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+}
+.layer-item::after {
+  content: '';
+  margin-left: auto;
+  width: 34px;
+  height: 20px;
+  border-radius: 999px;
+  background: radial-gradient(circle at 10px 10px, #fff 7px, transparent 7.5px), var(--border);
+  transition: background 0.15s;
+}
+.layer-item[aria-pressed='true']::after {
+  background: radial-gradient(circle at 24px 10px, #fff 7px, transparent 7.5px), var(--accent);
+}
+.layer-item[aria-pressed='false'] {
+  color: var(--muted);
 }

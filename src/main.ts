@@ -421,6 +421,21 @@ presetSel.addEventListener('change', () => {
 for (const el of [latIn, lonIn, eleIn]) el.addEventListener('input', () => (presetSel.value = ''));
 hiddenIn.addEventListener('change', requestRender);
 
+/** Ebenen-Menü über der Bedienleiste: aufklappen, Ebenen umschalten; Tippen daneben schließt. */
+const layersMenu = $<HTMLDivElement>('layers-menu');
+const layersOpen = $<HTMLButtonElement>('layers-open');
+function setLayersMenu(open: boolean) {
+  layersMenu.hidden = !open;
+  layersOpen.setAttribute('aria-expanded', String(open));
+}
+layersOpen.addEventListener('click', (e) => {
+  e.stopPropagation();
+  setLayersMenu(layersMenu.hidden === true);
+});
+document.addEventListener('pointerdown', (e) => {
+  if (!layersMenu.hidden && !layersMenu.contains(e.target as Node) && !layersOpen.contains(e.target as Node)) setLayersMenu(false);
+});
+
 /** Ebenen ein-/ausblenden (der Bildabgleich nutzt sie weiter). */
 const showTerrainIn = $<HTMLInputElement>('show-terrain');
 const showSkyIn = $<HTMLInputElement>('show-sky');
