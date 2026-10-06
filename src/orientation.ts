@@ -110,6 +110,15 @@ export class OrientationTracker {
     return typeof (DeviceOrientationEvent as unknown as { requestPermission?: unknown }).requestPermission === 'function';
   }
 
+  /**
+   * Nach einem Bildabgleich: Kompass zieht den Kurs eine Weile kaum nach (Zeitkonstante
+   * 60 s statt 4 s), sonst verschieben Störungen des Magnetometers den Abgleich wieder.
+   */
+  holdCompass(ms: number): void {
+    this.holdUntil = performance.now() + ms;
+  }
+  private holdUntil = 0;
+
   get angles(): ViewAngles | null {
     return this.filtered;
   }
@@ -135,6 +144,7 @@ export class OrientationTracker {
       this.lastAbsolute = t;
       this.status = 'absolute';
       const abs = anglesFor(e.alpha);
+      this.fusion.tauSec = performance.now() < this.holdUntil ? 60 : 4;
       this.fusion.absolute(abs.heading, t);
       // Liefert der Browser parallel Gyro-Daten, steuern diese den Blick (siehe unten)
       if (t - this.lastRelative < 300 && this.fusion.ready) return;
@@ -186,7 +196,7 @@ export class HeadingFusion {
   private offsetT = 0;
   private rel: { heading: number; t: number } | null = null;
 
-  constructor(private tauSec = 4) {}
+  constructor(public tauSec = 4) {}
 
   get ready(): boolean {
     return this.offset !== null;

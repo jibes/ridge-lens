@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Camera } from './projection';
-import { detectBody, extractSkyline, matchPitch, matchSkyline, screenToDir, searchWindows, type BodyTarget } from './vision';
+import { detectBody, extractSkyline, matchPitch, matchSkyline, matchSkylineHaze, screenToDir, searchWindows, type BodyTarget } from './vision';
 import { project } from './projection';
 
 const AZ_STEP = 0.1;
@@ -302,5 +302,48 @@ describe('pitch-only alignment', () => {
     for (const opts of [{ fog: true }, { testPattern: true }, { treeline: 12 }]) {
       expect(matchPitch(skylinePoints(truth, truth, horizon, opts), horizon, AZ_STEP, truth, COLS).ok).toBe(false);
     }
+  });
+});
+
+describe('haze: far mountains invisible', () => {
+  // Nahe Hügel mit Struktur, dahinter ferne Gipfel, die im Bild fehlen
+  const near = mountainHorizon();
+  // Ferne Gipfel ragen über die nahe Silhouette
+  const full = near.map((v, i) => {
+    const az = i * AZ_STEP;
+    let el = v;
+    for (const [pAz, pEl, w] of [[199, 6, 0.8], [208, 5.5, 1], [217, 6.5, 0.7]]) el = Math.max(el, pEl - Math.abs(az - pAz) / w);
+    return el;
+  });
+
+  function points(sensor: Camera) {
+    const img = renderImage(truth, near, { noSnow: true });
+    const sky = extractSkyline(img, COLS, ROWS, searchWindows(sensor, full, AZ_STEP, COLS, ROWS));
+    const out: { x: number; y: number }[] = [];
+    for (let c = 0; c < COLS; c++) if (!Number.isNaN(sky.y[c])) out.push({ x: ((c + 0.5) * W) / COLS, y: (sky.y[c] * H) / ROWS });
+    return out;
+  }
+
+  it('matches the near silhouette instead of bending to invisible peaks', () => {
+    for (const dh of [-4, 3, 6]) {
+      const sensor: Camera = { ...truth, heading: truth.heading + dh, pitch: truth.pitch + 0.5 };
+      const pts = points(sensor);
+      const m = matchSkylineHaze(pts, [full, near], AZ_STEP, sensor, COLS);
+      expect(m.ok).toBe(true);
+      expect(m.band).toBe(1);
+      expect(Math.abs(sensor.heading + m.dHeading - truth.heading)).toBeLessThan(0.3);
+    }
+  });
+
+  it('clear view still uses the full silhouette', () => {
+    const sensor: Camera = { ...truth, heading: truth.heading + 3, pitch: truth.pitch + 0.5 };
+    const img = renderImage(truth, full, { noSnow: true });
+    const sky = extractSkyline(img, COLS, ROWS, searchWindows(sensor, full, AZ_STEP, COLS, ROWS));
+    const pts: { x: number; y: number }[] = [];
+    for (let c = 0; c < COLS; c++) if (!Number.isNaN(sky.y[c])) pts.push({ x: ((c + 0.5) * W) / COLS, y: (sky.y[c] * H) / ROWS });
+    const m = matchSkylineHaze(pts, [full, near], AZ_STEP, sensor, COLS);
+    expect(m.ok).toBe(true);
+    expect(m.band).toBe(0);
+    expect(Math.abs(sensor.heading + m.dHeading - truth.heading)).toBeLessThan(0.3);
   });
 });

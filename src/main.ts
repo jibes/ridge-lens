@@ -273,6 +273,7 @@ worker.onmessage = (ev: MessageEvent<WorkerMessage>) => {
     // Volle Silhouette nach dem ersten Sektor
     if (!pano) return;
     pano.horizon = msg.horizon;
+    pano.hazeHorizons = msg.hazeHorizons;
     pano.linePoints = msg.linePoints;
     pano.lineOffsets = msg.lineOffsets;
     pano.complete = true;
@@ -1159,7 +1160,12 @@ function visionTick() {
   if (!autoAlignIn.checked || visionBusy || !steady || !pano || !pano.complete || !sensorOn || !cameraShown() || document.hidden) return;
   if (visionHorizon !== pano.horizon) {
     visionHorizon = pano.horizon;
-    visionWorker.postMessage({ type: 'horizon', horizon: pano.horizon.slice(), azStep: pano.azStep } satisfies VisionRequest);
+    visionWorker.postMessage({
+      type: 'horizon',
+      horizon: pano.horizon.slice(),
+      haze: pano.hazeHorizons.map((b) => b.horizon.slice()),
+      azStep: pano.azStep,
+    } satisfies VisionRequest);
   }
   const { w: vw, h: vh } = cameraFeed.size;
   const scale = Math.max(cam.width / vw, cam.height / vh);
@@ -1173,6 +1179,7 @@ function visionTick() {
   const pixels = visionCtx.getImageData(0, 0, cols, rows).data;
   visionBusy = true;
   offsetPitchAtSend = offset.pitch;
+  offsetHeadingAtSend = offset.heading;
   visionWorker.postMessage(
     { type: 'frame', id: ++visionId, pixels, cols, rows, cam: { ...cam }, bodies: visionBodies() } satisfies VisionRequest,
     [pixels.buffer],
@@ -1199,6 +1206,18 @@ function visionBodies(): BodyTarget[] {
 let tiltSamples: (TiltSample & { t: number; fov: number })[] = [];
 /** Neigungskorrektur beim Absenden des Bilds (die Antwort kommt eine Weile später). */
 let offsetPitchAtSend = 0;
+let offsetHeadingAtSend = 0;
+/** Unbestätigter großer Kurssprung: Ziel-Korrektur und Zeitpunkt. */
+let headingCandidate: { offset: number; t: number } | null = null;
+/** Große Kurskorrektur erst, wenn ein zweites Bild sie bestätigt (Fehltreffer kommen vereinzelt). */
+function confirmHeading(dHeading: number): boolean {
+  if (Math.abs(dHeading) < 1.5) return true;
+  const now = performance.now();
+  const target = offsetHeadingAtSend + dHeading;
+  const ok = !!headingCandidate && now - headingCandidate.t < 15_000 && Math.abs(deltaDeg(target, headingCandidate.offset)) < 1;
+  headingCandidate = { offset: target, t: now };
+  return ok;
+}
 
 function calibrateFromTilt(match: MatchResult, snap: Camera): boolean {
   const now = performance.now();
@@ -1227,6 +1246,9 @@ visionWorker.onmessage = (ev: MessageEvent<VisionResponse>) => {
     requestRender();
     return;
   }
+  if (source !== 'pitch' && !confirmHeading(match.dHeading)) return;
+  // Bildbezug hält den Kurs; der Kompass zieht ihn danach nur noch langsam nach
+  if (source !== 'pitch') tracker.holdCompass(120_000);
   // Korrekturen beziehen sich auf die Kamera zum Aufnahmezeitpunkt; Offsets sind darin enthalten
   offset.heading = deltaDeg(offset.heading + VISION_GAIN * match.dHeading, 0);
   offset.pitch = Math.max(-20, Math.min(20, offset.pitch + VISION_GAIN * match.dPitch));

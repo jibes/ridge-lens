@@ -415,6 +415,30 @@ export function detectBody(
 }
 
 /**
+ * Abgleich gegen mehrere Modell-Silhouetten: die volle und solche nur aus nahem Gelände
+ * (ferne Gipfel im Dunst unsichtbar). Sonst passt der Abgleich die nahen Hügel an die
+ * unsichtbaren Alpen an und verdreht den Kurs. Stimmen gültige Lösungen nicht überein,
+ * gewinnt nur eine mit deutlich kleinerer Restabweichung.
+ */
+export function matchSkylineHaze(
+  points: { x: number; y: number }[],
+  horizons: ArrayLike<number>[],
+  azStep: number,
+  cam: Camera,
+  totalColumns: number,
+): MatchResult & { band: number } {
+  const all = horizons.map((h, band) => ({ ...matchSkyline(points, h, azStep, cam, totalColumns), band }));
+  const ok = all.filter((m) => m.ok).sort((a, b) => a.cost - b.cost);
+  if (!ok.length) return all[0];
+  const [best, ...rest] = ok;
+  for (const m of rest) {
+    const agree = Math.abs(m.dHeading - best.dHeading) < 0.7 && Math.abs(m.dPitch - best.dPitch) < 0.3;
+    if (!agree && m.cost < best.cost * 1.6) return { ...best, ok: false, reason: 'ambiguous' };
+  }
+  return best;
+}
+
+/**
  * Nur die Neigung abgleichen, wenn der volle Abgleich scheitert – etwa weil Bäume die
  * halbe Silhouette verdecken oder der Horizont zu flach für den Kurs ist. Zulässig nur,
  * wo der berechnete Horizont auf ±3° Kurs kaum variiert (ein Kursfehler verfälscht die

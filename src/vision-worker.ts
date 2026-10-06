@@ -1,10 +1,10 @@
 /// <reference lib="webworker" />
 // Bildabgleich im Hintergrund, damit die Anzeige flüssig bleibt.
 import type { Camera } from './projection';
-import { detectBody, extractSkyline, matchPitch, matchSkyline, searchWindows, type BodyTarget, type MatchResult } from './vision';
+import { detectBody, extractSkyline, matchPitch, matchSkylineHaze, searchWindows, type BodyTarget, type MatchResult } from './vision';
 
 export type VisionRequest =
-  | { type: 'horizon'; horizon: Float32Array; azStep: number }
+  | { type: 'horizon'; horizon: Float32Array; haze: Float32Array[]; azStep: number }
   | { type: 'frame'; id: number; pixels: Uint8ClampedArray; cols: number; rows: number; cam: Camera; bodies: BodyTarget[] };
 
 export interface VisionResponse {
@@ -17,12 +17,14 @@ export interface VisionResponse {
 
 declare const self: DedicatedWorkerGlobalScope;
 let horizon: Float32Array | null = null;
+let haze: Float32Array[] = [];
 let azStep = 0.1;
 
 self.onmessage = (ev: MessageEvent<VisionRequest>) => {
   const msg = ev.data;
   if (msg.type === 'horizon') {
     horizon = msg.horizon;
+    haze = msg.haze;
     azStep = msg.azStep;
     return;
   }
@@ -34,7 +36,7 @@ self.onmessage = (ev: MessageEvent<VisionRequest>) => {
   for (let c = 0; c < cols; c++) {
     if (!Number.isNaN(sky.y[c])) points.push({ x: ((c + 0.5) * cam.width) / cols, y: (sky.y[c] * cam.height) / rows });
   }
-  const match = matchSkyline(points, horizon, azStep, cam, cols);
+  const match = matchSkylineHaze(points, [horizon, ...haze], azStep, cam, cols);
   if (!match.ok) {
     // Ohne brauchbare Silhouette: Sonne bzw. Mond als Fixpunkt
     for (const body of msg.bodies) {
@@ -49,8 +51,10 @@ self.onmessage = (ev: MessageEvent<VisionRequest>) => {
     for (let c = 0; c < cols; c++) {
       if (sky.blueSky[c]) skyPoints.push({ x: ((c + 0.5) * cam.width) / cols, y: (sky.y[c] * cam.height) / rows });
     }
-    const pitch = matchPitch(skyPoints, horizon, azStep, cam, cols);
-    if (pitch.ok) {
+    // Je Modell-Silhouette (Dunst); widersprechen sich gültige Lösungen, keine Korrektur
+    const pitches = [horizon, ...haze].map((h) => matchPitch(skyPoints, h, azStep, cam, cols)).filter((m) => m.ok);
+    const pitch = pitches.sort((a, b) => a.cost - b.cost)[0];
+    if (pitch && pitches.every((m) => Math.abs(m.dPitch - pitch.dPitch) < 0.3)) {
       self.postMessage({ id: msg.id, cam, match: pitch, source: 'pitch' } satisfies VisionResponse);
       return;
     }

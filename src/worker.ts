@@ -22,6 +22,8 @@ const NEAR_RADIUS = 8000;
 const FIRST_TILE_WAIT_MS = 8_000;
 /** Halbe Breite des zuerst berechneten Sektors um die Blickrichtung (Grad). */
 const SECTOR = 70;
+/** Sichtweiten (m) für die Dunst-Silhouetten des Bildabgleichs. */
+const HAZE_DISTS = [15_000, 35_000];
 
 declare const self: DedicatedWorkerGlobalScope;
 let currentId = 0;
@@ -104,6 +106,8 @@ async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?
 
   const nBins = Math.round(360 / AZ_STEP);
   const horizon = new Float32Array(nBins).fill(NaN);
+  // Silhouette nur bis zu einer Entfernung: ferne Gipfel verschwinden im Dunst
+  const hazeHorizons = HAZE_DISTS.map((dist) => ({ dist, horizon: new Float32Array(nBins).fill(NaN) }));
   const bins: RidgePoint[][] = Array.from({ length: nBins }, () => []);
   const ray = { dists: [] as number[], angles: [] as number[] };
   let doneRays = 0;
@@ -115,6 +119,11 @@ async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?
       const { ridges, horizon: hz } = extractRidges(ray.dists, ray.angles);
       bins[i] = ridges;
       horizon[i] = hz;
+      for (const band of hazeHorizons) {
+        let max = -90;
+        for (let k = 0; k < ray.dists.length && ray.dists[k] <= band.dist; k++) max = Math.max(max, ray.angles[k]);
+        band.horizon[i] = max;
+      }
     }
   };
   // Lücken überbrücken, kurze Stücke (Rauschen in der Ferne) verwerfen
@@ -159,6 +168,7 @@ async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?
     h0,
     azStep: AZ_STEP,
     horizon: horizon.slice(),
+    hazeHorizons: hazeHorizons.map((b) => ({ dist: b.dist, horizon: b.horizon.slice() })),
     complete: false,
     linePoints: lines.points,
     lineOffsets: lines.offsets,
@@ -176,7 +186,13 @@ async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?
   castBins((az) => !inSector(az));
   const all = link();
   const full = horizon.slice();
-  post({ id, type: 'horizon', horizon: full, linePoints: all.points, lineOffsets: all.offsets }, [full.buffer, all.points.buffer, all.offsets.buffer]);
+  const haze = hazeHorizons.map((b) => ({ dist: b.dist, horizon: b.horizon.slice() }));
+  post({ id, type: 'horizon', horizon: full, hazeHorizons: haze, linePoints: all.points, lineOffsets: all.offsets }, [
+    full.buffer,
+    ...haze.map((b) => b.horizon.buffer),
+    all.points.buffer,
+    all.offsets.buffer,
+  ]);
   const rest = raw.filter((p) => !inSector(bearing(observer, p)));
   if (rest.length) post({ id, type: 'peaks', peaks: process(rest), progress: { ...tileProgress }, error: peakError });
 
