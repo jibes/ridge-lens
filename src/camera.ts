@@ -2,11 +2,12 @@ const RAD = Math.PI / 180;
 const DEG = 180 / Math.PI;
 
 /**
- * Bildwinkel der Hauptkamera entlang der langen Bildseite. Typische Handy-Hauptkamera:
- * 26 mm Kleinbild-äquivalent, 4:3-Sensor → ca. 67°. 16:9-Videos schneiden die kurze
- * Seite ab, die lange bleibt.
+ * Bildwinkel der Hauptkamera entlang der langen Bildseite (4:3-Sensor; 16:9-Videos
+ * schneiden die kurze Seite ab, die lange bleibt). iPhone: 26 mm Kleinbild-äquivalent
+ * → ca. 67°. Android (Samsung, Pixel u. a.) meist 23–24 mm → ca. 72°; im Feldtest
+ * (Samsung) gemessen ≈ 71°.
  */
-export const DEFAULT_CAMERA_FOV = 67;
+export const DEFAULT_CAMERA_FOV = typeof navigator !== 'undefined' && /iPhone|iPad|iPod/.test(navigator.userAgent) ? 67 : 71;
 
 /**
  * Horizontales Sichtfeld der Anzeige, wenn das Video mit `object-fit: cover` die
