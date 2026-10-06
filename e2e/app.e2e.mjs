@@ -77,6 +77,22 @@ const ctx = await browser.newContext({
   serviceWorkers: 'block',
 });
 await ctx.route('**/elevation-tiles-prod/**', (r) => r.fulfill({ status: 200, contentType: 'image/png', body: TILE, headers: { 'access-control-allow-origin': '*' } }));
+// Bahnelemente der ISS (sonst vom Workflow); Epoche 6.10.2026
+await ctx.route('**/peaks/sats.json', (r) =>
+  r.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      sats: [
+        {
+          n: 'ISS (ZARYA)',
+          l1: '1 25544U 98067A   26279.50000000  .00016717  00000-0  10270-3 0  9005',
+          l2: '2 25544  51.6416 247.4627 0006703 130.5360 325.0288 15.50377579 99999',
+        },
+      ],
+    }),
+  }),
+);
 await ctx.route(/overpass|maps\.mail\.ru/, (r) => r.fulfill({ status: 200, contentType: 'text/plain', body: '', headers: { 'access-control-allow-origin': '*' } }));
 const page = await ctx.newPage();
 const errors = [];
@@ -140,6 +156,10 @@ try {
   await page.waitForTimeout(300);
   check(!(await page.isHidden('#target')), 'Mond als Ziel gewählt: Ziel-Chip sichtbar');
   await page.click('#target-close');
+  const iss = await search('ISS');
+  check(iss.some((x) => /ISS.*Satellit.*(Überflug|kein Überflug|°)/.test(x)), `ISS als Satellit mit Überflug gefunden (${iss[0] ?? '–'})`);
+  const mw = await search('Milchstr');
+  check(mw.some((x) => /Zentrum der Milchstraße/.test(x)), 'Zentrum der Milchstraße suchbar');
 
   // 4. Manueller Modus zeigt bzw. verbirgt die Werkzeuge
   await page.click('#menu');

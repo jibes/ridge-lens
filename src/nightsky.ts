@@ -3,6 +3,7 @@
  * Horizontkoordinaten für Zeit und Ort. Daten: public/sky/sky.json (scripts/build-sky.mjs).
  */
 import { PLANETS, planetEquatorial, starPosition, starsToHorizontal, type PlanetId } from './astro';
+import { MILKY_WAY_CORE } from './tracks';
 import type { Lang } from './i18n';
 
 type Names = Record<'en' | 'de' | 'fr' | 'it', string>;
@@ -15,7 +16,7 @@ export interface SkyData {
 /** Antippbares Objekt (Planet, heller benannter Stern). */
 export interface SkyObject {
   key: string;
-  kind: 'planet' | 'star';
+  kind: 'planet' | 'star' | 'deep';
   name: string;
   az: number;
   alt: number;
@@ -79,6 +80,7 @@ export function buildNightSky(
   lang: Lang,
   sunAlt: number,
   planetName: (id: PlanetId) => string,
+  milkyWayName = 'Milky Way core',
 ): NightSky {
   const fade = darkness(sunAlt);
   const magLimit = 1 + 4.5 * fade;
@@ -100,6 +102,8 @@ export function buildNightSky(
     const h = starPosition(p.ra, p.dec, date, lat, lon);
     objects.push({ key: `planet:${id}`, kind: 'planet', name: planetName(id), az: h.az, alt: h.alt, mag: p.mag });
   }
+  const mw = starPosition(MILKY_WAY_CORE.ra, MILKY_WAY_CORE.dec, date, lat, lon);
+  objects.push({ key: 'mw', kind: 'deep', name: milkyWayName, az: mw.az, alt: mw.alt, mag: 2 });
   return {
     pos,
     mag: sky.mag,

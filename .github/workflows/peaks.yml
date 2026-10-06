@@ -18,6 +18,7 @@ on:
     branches: [main]
     paths:
       - scripts/build-peaks.mjs
+      - scripts/build-sats.mjs
       - scripts/restore-peaks.sh
       - .github/workflows/peaks.yml
 
@@ -45,7 +46,8 @@ jobs:
       - name: Restore dataset
         run: |
           scripts/restore-peaks.sh public/peaks
-          sha1sum public/peaks/index.json > "$RUNNER_TEMP/index.sha" 2>/dev/null || true
+          # Prüfsummen relativ zum Datensatz (der Veröffentlichungsschritt läuft darin)
+          (cd public/peaks && sha1sum index.json $(ls sats.json 2>/dev/null)) > "$RUNNER_TEMP/index.sha" 2>/dev/null || true
       - name: Decide OSM refresh
         id: osm
         shell: bash
@@ -91,12 +93,31 @@ jobs:
         env:
           PEAKS_BUDGET_MIN: 45
         run: node scripts/build-peaks.mjs
+      - name: Fetch satellite elements
+        # Bahnelemente (CelesTrak): hellste Satelliten plus ISS, Tiangong, Hubble; höchstens
+        # alle 12 h (CelesTrak bittet um sparsame Abrufe). Fehlschlag: alte Datei bleibt.
+        continue-on-error: true
+        shell: bash
+        run: |
+          gen=$(jq -r '.generated // empty' public/peaks/sats.json 2>/dev/null || true)
+          if [ -n "$gen" ] && [ $(( $(date +%s) - $(date -d "$gen" +%s) )) -lt 43200 ]; then
+            echo "Satelliten vom $gen – noch aktuell"; exit 0
+          fi
+          ua='ridge-lens-build (github.com/jibes/ridge-lens)'
+          base=https://celestrak.org/NORAD/elements/gp.php
+          curl -sf --retry 2 -A "$ua" "$base?GROUP=visual&FORMAT=tle" -o "$RUNNER_TEMP/visual.tle"
+          for id in 25544 48274 20580; do
+            curl -sf --retry 2 -A "$ua" "$base?CATNR=$id&FORMAT=tle" >> "$RUNNER_TEMP/major.tle" || true
+          done
+          node scripts/build-sats.mjs "$RUNNER_TEMP/major.tle" "$RUNNER_TEMP/visual.tle"
       - name: Publish to branch peaks-data
         working-directory: public/peaks
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          if [ -z "${PEAKS_BOOTSTRAPPED:-}" ] && sha1sum -c --status "$RUNNER_TEMP/index.sha" 2>/dev/null; then
+          # Unverändert: gleicher Index, gleiche bzw. weiterhin keine Satellitendatei
+          if [ -z "${PEAKS_BOOTSTRAPPED:-}" ] && sha1sum -c --status "$RUNNER_TEMP/index.sha" 2>/dev/null \
+            && { [ ! -f sats.json ] || grep -q ' sats.json$' "$RUNNER_TEMP/index.sha"; }; then
             echo "Keine Änderungen"; exit 0
           fi
           git init -q

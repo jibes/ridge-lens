@@ -2,6 +2,8 @@ import { deltaDeg, normalizeDeg } from './geo';
 import { OrientationTracker } from './orientation';
 import { decimalYear, declination as magneticDeclination } from './magnetic';
 import { prefetchArea } from './offline';
+import type { SatInfo, SatPass } from './sats';
+import { dayTrack } from './tracks';
 import { azimuthInView, projector, type Camera } from './projection';
 import type { ComputeRequest, PanoramaResult, Peak, WorkerMessage } from './protocol';
 import { applyDom, compassLabels, detectLang, lang, setLang, storedLangChoice, storeLangChoice, t, type Lang } from './i18n';
@@ -9,7 +11,7 @@ import { CameraFeed, DEFAULT_CAMERA_FOV, displayHfov, fitTilt, fovLongFromDispla
 import type { VisionRequest, VisionResponse } from './vision-worker';
 import type { BodyTarget, MatchResult, StarRef } from './vision';
 import { CAMERA, DARK, LIGHT, renderOverview, renderView, turnToTarget, type PlacedLabel, type SkyBody } from './render';
-import { bodyPath, moonPosition, sunPosition, terrainEvents } from './astro';
+import { bodyPath, moonPosition, sunPosition, terrainEvents, type PathPoint } from './astro';
 import { buildNightSky, prepareSky, type NightSky, type PreparedSky, type SkyData } from './nightsky';
 import { fold, nameScore, scorePeaks } from './search';
 import { skylineRelief } from './panorama';
@@ -245,6 +247,7 @@ function render() {
     peakName,
     compass: compassLabels(8),
     sky: visibleSky(),
+    sats: shownSats(),
     night,
     // Skala und Labels unterhalb der Statuszeile beginnen
     topInset: statusEl.getBoundingClientRect().bottom - view.getBoundingClientRect().top,
@@ -460,6 +463,7 @@ for (const [el, key] of [
   });
   el.addEventListener('change', () => {
     btn.setAttribute('aria-pressed', String(el.checked));
+    if (el === showSkyIn && el.checked) void loadSats();
     try {
       localStorage.setItem(key, el.checked ? 'on' : 'off');
     } catch {
@@ -651,7 +655,7 @@ function selectAt(e: PointerEvent) {
 function selection(): { name: string; az: number; angle: number; details: string } | null {
   if (selected) return { name: peakName(selected), az: selected.az, angle: selected.angle, details: peakDetails(selected) };
   const o = tappableSky().find((x) => x.key === selectedSky);
-  return o ? { name: o.name, az: o.az, angle: o.alt, details: o.details } : null;
+  return o ? { name: o.name, az: o.az, angle: o.alt, details: skyDetails(o.key) } : null;
 }
 
 function updateAlignBar() {
@@ -696,7 +700,7 @@ $<HTMLButtonElement>('align-close').addEventListener('click', () => {
 // --- Sonne und Mond --------------------------------------------------------------
 
 let sky: SkyBody[] = [];
-let skyEvents: Record<SkyBody['kind'], { rise: number | null; set: number | null }> | null = null;
+let skyEvents: Record<'sun' | 'moon', { rise: number | null; set: number | null }> | null = null;
 const skyInfo = $<HTMLParagraphElement>('sky-info');
 
 /** Lage jetzt, Tagesbahnen und Auf-/Untergang über dem Gelände am aktuellen Standort. */
@@ -747,7 +751,7 @@ function updateNight() {
   if (preparedSky && sun && Number.isFinite(lat) && Number.isFinite(lon)) {
     const date = new Date(skyTime ?? Date.now());
     // Sonnenhöhe zum selben Zeitpunkt (die Liste kann bis zu einer Minute alt sein)
-    night = buildNightSky(preparedSky, date, lat, lon, lang(), sunPosition(date, lat, lon).alt, (id) => t(`planet.${id}`));
+    night = buildNightSky(preparedSky, date, lat, lon, lang(), sunPosition(date, lat, lon).alt, (id) => t(`planet.${id}`), t('sky.milkyWay'));
   }
   if (selectedSky) updateAlignBar();
   requestRender();
@@ -758,15 +762,16 @@ window.setInterval(() => {
 }, 10_000);
 
 /** Antippbare Himmelsobjekte über dem Gelände: Sonne, Mond, nachts Planeten und helle Sterne. */
-function tappableSky(): { key: string; name: string; az: number; alt: number; details: string }[] {
+function tappableSky(): { key: string; name: string; az: number; alt: number }[] {
   if (!showSkyIn.checked) return [];
-  const out: { key: string; name: string; az: number; alt: number; details: string }[] = sky.map((b) => ({ key: b.kind, name: t(b.kind === 'sun' ? 'sky.sun' : 'sky.moon'), az: b.az, alt: b.alt, details: bodyDetails(b) }));
+  const out: { key: string; name: string; az: number; alt: number }[] = sky.map((b) => ({ key: b.kind, name: t(b.kind === 'sun' ? 'sky.sun' : 'sky.moon'), az: b.az, alt: b.alt }));
   if (night && night.fade > 0) {
     for (const o of night.objects) {
       if (o.mag > night.magLimit + (o.kind === 'planet' ? 1.5 : 0)) continue;
-      out.push({ key: o.key, name: o.name, az: o.az, alt: o.alt, details: t('sky.objDetails', { alt: o.alt.toFixed(1), az: Math.round(o.az), mag: o.mag.toFixed(1) }) });
+      out.push({ key: o.key, name: o.name, az: o.az, alt: o.alt });
     }
   }
+  for (const s of shownSats()) out.push({ key: s.key, name: s.name, az: s.az, alt: s.alt });
   const p = pano;
   return out.filter((o) => !p || o.alt >= p.horizon[Math.round(o.az / p.azStep) % p.horizon.length]);
 }
@@ -795,9 +800,124 @@ $<HTMLButtonElement>('sky-now').addEventListener('click', () => {
  * würden z. B. abends die Morgenbahn quer über den Osthimmel legen); ganze Bahn bei
  * gewählter Zeit oder wenn Sonne/Mond angetippt ist.
  */
-/** Sonne und Mond mit voller Tagesbahn (über dem Gelände). */
+/** Sonne und Mond mit voller Tagesbahn; dazu die Bahn des gewählten bzw. gesuchten Objekts. */
 function visibleSky(): SkyBody[] {
-  return sky;
+  const key = trackKey();
+  if (!key) return sky;
+  const path = key.startsWith('sat:') ? (satPass(key)?.path ?? []) : objectTrack(key);
+  if (!path.length) return sky;
+  return [...sky, { kind: 'track', az: 0, alt: 0, path, marks: key.startsWith('sat:') ? 'minute' : 'hour' }];
+}
+
+/** Objekt, dessen Bahn gezeigt wird: ausgewählt, sonst gesucht (Sonne/Mond haben ihre Bahn immer). */
+function trackKey(): string | null {
+  const k = selectedSky ?? targetSky;
+  return k && k !== 'sun' && k !== 'moon' ? k : null;
+}
+
+/** Tagesbahn (0–24 Uhr) eines Planeten, Sterns, Sternbilds oder der Milchstraße; zwischengespeichert. */
+const trackCache = new Map<string, PathPoint[]>();
+function objectTrack(key: string): PathPoint[] {
+  const lat = pano?.request.lat ?? Number(latIn.value);
+  const lon = pano?.request.lon ?? Number(lonIn.value);
+  const start = new Date(skyTime ?? Date.now()).setHours(0, 0, 0, 0);
+  const id = `${key}|${start}|${lat.toFixed(3)}|${lon.toFixed(3)}`;
+  let path = trackCache.get(id);
+  if (!path) {
+    path = dayTrack(key, preparedSky?.data ?? null, lat, lon, start, start + 86_400_000, 5);
+    if (trackCache.size > 50) trackCache.clear();
+    trackCache.set(id, path);
+  }
+  return path;
+}
+
+/** Details zu einem Himmelsobjekt: Auf-/Untergang über dem Gelände, Lage, Helligkeit bzw. Überflug. */
+function skyDetails(key: string): string {
+  const body = sky.find((b) => b.kind === key);
+  if (body) return bodyDetails(body);
+  if (key.startsWith('sat:')) {
+    const p = satPass(key);
+    if (!p) return t('sat.noPass');
+    return t('sat.pass', { from: fmtTime(p.rise), to: fmtTime(p.set), max: Math.round(p.maxAlt), vis: t(p.visible ? 'sat.visible' : 'sat.notVisible') });
+  }
+  const o = night?.objects.find((x) => x.key === key);
+  const p = pano;
+  const ev = terrainEvents(objectTrack(key), (az) => (p ? p.horizon[Math.round(az / p.azStep) % p.horizon.length] : 0));
+  const now = o ? t('sky.objDetails', { alt: o.alt.toFixed(1), az: Math.round(o.az), mag: o.mag.toFixed(1) }) : '';
+  return [t('sky.riseSet', { rise: fmtTime(ev.rise), set: fmtTime(ev.set) }), now].filter(Boolean).join(' · ');
+}
+
+// --- Satelliten ---------------------------------------------------------------------
+
+type SatModule = typeof import('./sats');
+let satMod: SatModule | null = null;
+let satList: SatInfo[] = [];
+let satNow: { key: string; name: string; major: boolean; az: number; alt: number; sunlit: boolean }[] = [];
+let satLoading = false;
+
+/** Bahnelemente (vom Workflow täglich, peaks/sats.json) und Rechenmodul erst bei Bedarf laden. */
+async function loadSats() {
+  if (satMod || satLoading) return;
+  satLoading = true;
+  try {
+    const res = await fetch('./peaks/sats.json');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    satMod = await import('./sats');
+    satList = satMod.parseSats(json);
+    updateSats();
+  } catch (err) {
+    console.warn('Satelliten:', err);
+  } finally {
+    satLoading = false;
+  }
+}
+
+function observerPos() {
+  return { lat: pano?.request.lat ?? Number(latIn.value), lon: pano?.request.lon ?? Number(lonIn.value), h: pano?.h0 ?? 0 };
+}
+
+/** Lage aller Satelliten über dem Horizont (sekündlich; die ISS zieht bis 1°/s). */
+function updateSats() {
+  if (!satMod || !showSkyIn.checked) {
+    satNow = [];
+    return;
+  }
+  const { lat, lon, h } = observerPos();
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  const date = new Date(skyTime ?? Date.now());
+  const out: typeof satNow = [];
+  for (const s of satList) {
+    const l = satMod.satLook(s, date, lat, lon, h);
+    if (l && l.alt > 0) out.push({ key: s.key, name: s.name, major: s.major, ...l });
+  }
+  satNow = out;
+  if (out.length) requestRender();
+}
+window.setInterval(updateSats, 1000);
+
+/** Gezeigte Satelliten: Raumstationen immer, andere nur mit bloßem Auge sichtbar, sowie der gewählte. */
+function shownSats(): { key: string; name: string; az: number; alt: number; visible: boolean; label: boolean }[] {
+  if (!showSkyIn.checked) return [];
+  const sunAlt = sky.find((b) => b.kind === 'sun')?.alt ?? 0;
+  const focus = (k: string) => k === selectedSky || k === targetSky;
+  return satNow
+    .map((s) => ({ key: s.key, name: s.name, az: s.az, alt: s.alt, visible: s.sunlit && sunAlt < -6, label: s.major || focus(s.key), major: s.major }))
+    .filter((s) => s.major || s.visible || focus(s.key));
+}
+
+/** Laufender oder nächster Überflug, eine Minute zwischengespeichert. */
+const passCache = new Map<string, { at: number; pass: SatPass | null }>();
+function satPass(key: string): SatPass | null {
+  const sat = satList.find((s) => s.key === key);
+  if (!satMod || !sat) return null;
+  const now = skyTime ?? Date.now();
+  const hit = passCache.get(key);
+  if (hit && Math.abs(now - hit.at) < 60_000 && (!hit.pass || hit.pass.set > now)) return hit.pass;
+  const { lat, lon, h } = observerPos();
+  const pass = satMod.nextPass(sat, now, lat, lon, h);
+  passCache.set(key, { at: now, pass });
+  return pass;
 }
 
 function fmtTime(t: number | null): string {
@@ -820,7 +940,7 @@ function showSkyInfo() {
 }
 
 function bodyDetails(b: SkyBody): string {
-  const ev = skyEvents?.[b.kind];
+  const ev = b.kind === 'track' ? undefined : skyEvents?.[b.kind];
   return (
     t('sky.details', { rise: fmtTime(ev?.rise ?? null), set: fmtTime(ev?.set ?? null), alt: b.alt.toFixed(1), az: Math.round(b.az) }) +
     (b.kind === 'moon' ? ` · ${t('sky.lit', { pct: Math.round((b.fraction ?? 0) * 100) })}` : '')
@@ -883,15 +1003,22 @@ interface SkyItem {
   names: string[];
   az: number;
   alt: number;
-  kind: 'sun' | 'moon' | 'planet' | 'star' | 'constellation';
+  kind: 'sun' | 'moon' | 'planet' | 'star' | 'deep' | 'constellation' | 'sat';
   /** Rang bei gleicher Übereinstimmung (heller = höher). */
   rank: number;
 }
 function skyItems(): SkyItem[] {
   const out: SkyItem[] = sky.map((b) => {
     const name = t(b.kind === 'sun' ? 'sky.sun' : 'sky.moon');
-    return { key: b.kind, name, names: [name, b.kind], az: b.az, alt: b.alt, kind: b.kind, rank: 30 };
+    const kind = b.kind as 'sun' | 'moon';
+    return { key: kind, name, names: [name, kind], az: b.az, alt: b.alt, kind, rank: 30 };
   });
+  // Satelliten: alle (auch unter dem Horizont), Lage aus der laufenden Rechnung
+  const up = new Map(satNow.map((s) => [s.key, s]));
+  for (const s of satList) {
+    const now = up.get(s.key);
+    out.push({ key: s.key, name: s.name, names: [s.name], az: now?.az ?? 0, alt: now?.alt ?? -90, kind: 'sat', rank: s.major ? 20 : 5 });
+  }
   if (night) {
     for (const o of night.objects) {
       out.push({ key: o.key, name: o.name, names: [o.name, o.key.slice(o.key.indexOf(':') + 1)], az: o.az, alt: o.alt, kind: o.kind, rank: 10 - o.mag });
@@ -912,6 +1039,11 @@ function targetPoint(): { name: string; az: number; angle: number } | null {
   }
   if (targetSky !== null) {
     const o = skyItems().find((x) => x.key === targetSky);
+    if (o?.kind === 'sat' && o.alt <= 0) {
+      // Noch unter dem Horizont: dorthin, wo er beim nächsten Überflug aufgeht
+      const rise = satPass(o.key)?.path[0];
+      return rise ? { name: o.name, az: rise.az, angle: rise.alt } : null;
+    }
     return o ? { name: o.name, az: o.az, angle: o.alt } : null;
   }
   return null;
@@ -924,7 +1056,7 @@ function aboveTerrainNow(az: number, alt: number): boolean {
 
 function showResults() {
   const q = fold(searchInput.value.trim());
-  type Hit = { score: number; rank: number; label: string; meta: string; pick: () => void };
+  type Hit = { score: number; rank: number; label: string; meta: () => string; pick: () => void };
   const hits: Hit[] = [];
   const dirOf = (az: number) => `${compassLabels(16)[Math.round(az / 22.5) % 16]} ${Math.round(az)}°`;
   if (q && showTerrainIn.checked) {
@@ -934,7 +1066,7 @@ function showResults() {
         score,
         rank: all.length - i,
         label: peakName(p),
-        meta:
+        meta: () =>
           `${Math.round(p.ele)} m · ${(p.dist / 1000).toFixed(p.dist < 10_000 ? 1 : 0)} km · ${dirOf(p.az)}` + (p.visible ? '' : ` · ${t('peak.hidden')}`),
         pick: () => setTarget({ peak: p }),
       });
@@ -944,9 +1076,14 @@ function showResults() {
     for (const o of skyItems()) {
       const score = nameScore(o.names, q);
       if (!score) continue;
-      const kind = o.kind === 'planet' ? t('search.planet') : o.kind === 'star' ? t('search.star') : o.kind === 'constellation' ? t('search.constellation') : '';
-      const where = aboveTerrainNow(o.az, o.alt) ? `${o.alt.toFixed(0)}° · ${dirOf(o.az)}` : t('search.below');
-      hits.push({ score, rank: o.rank, label: o.name, meta: [kind, where].filter(Boolean).join(' · '), pick: () => setTarget({ sky: o.key }) });
+      const kind = o.kind === 'planet' ? t('search.planet') : o.kind === 'star' ? t('search.star') : o.kind === 'constellation' ? t('search.constellation') : o.kind === 'sat' ? t('search.sat') : '';
+      // Satelliten unter dem Horizont: nächster Überflug; erst für gezeigte Treffer rechnen
+      const meta = () => {
+        const up = aboveTerrainNow(o.az, o.alt);
+        const where = o.kind === 'sat' && !up ? skyDetails(o.key) : up ? `${o.alt.toFixed(0)}° · ${dirOf(o.az)}` : t('search.below');
+        return [kind, where].filter(Boolean).join(' · ');
+      };
+      hits.push({ score, rank: o.rank, label: o.name, meta, pick: () => setTarget({ sky: o.key }) });
     }
   }
   hits.sort((a, b) => b.score - a.score || b.rank - a.rank);
@@ -959,7 +1096,7 @@ function showResults() {
       name.textContent = h.label;
       const meta = document.createElement('span');
       meta.className = 'meta';
-      meta.textContent = h.meta;
+      meta.textContent = h.meta();
       btn.append(name, meta);
       btn.addEventListener('click', h.pick);
       li.append(btn);
@@ -994,7 +1131,8 @@ function syncTarget() {
   const p = targetPoint();
   targetChip.hidden = !p;
   if (!p) return;
-  const name = p.name;
+  // Himmelskörper unter dem Gelände: Richtung zeigen, aber dazusagen
+  const name = targetSky !== null && !aboveTerrainNow(p.az, p.angle) ? `${p.name} (${t('search.below')})` : p.name;
   const turn = turnToTarget(cam, p.az);
   const vfov = (cam.hfov * cam.height) / cam.width;
   const dp = p.angle - cam.pitch;
@@ -1667,6 +1805,7 @@ window.addEventListener('languagechange', () => {
 // --- Start ------------------------------------------------------------------------
 
 applyLang(storedLangChoice());
+if (showSkyIn.checked) void loadSats();
 setStatus(() => t('status.ready'));
 
 // Ort aus URL bzw. Vorgabe als Rückfall; standardmäßig GPS und Sensoren

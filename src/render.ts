@@ -120,11 +120,16 @@ export interface RenderOptions {
   sky: SkyBody[];
   /** Sterne, Sternbilder, Planeten (null = nicht geladen). */
   night: NightSky | null;
+  /** Satelliten über dem Horizont (Richtung, beschienen, sichtbar fürs Auge, beschriftet). */
+  sats: { key: string; name: string; az: number; alt: number; visible: boolean; label: boolean }[];
 }
 
 /** Sonne oder Mond zum Zeichnen: aktuelle Lage und Tagesbahn. */
 export interface SkyBody {
-  kind: 'sun' | 'moon';
+  /** track: nur die Bahn eines gewählten Objekts (Planet, Stern, Satellit …), ohne Scheibe. */
+  kind: 'sun' | 'moon' | 'track';
+  /** Bahnmarken: volle Stunden (Standard) oder volle Minuten mit Uhrzeit (Satelliten). */
+  marks?: 'hour' | 'minute';
   az: number;
   alt: number;
   /** Mond: beleuchteter Anteil und Richtung zur Sonne (für die Lichtseite). */
@@ -157,6 +162,7 @@ export function renderView(
     if (opts.showSky) {
       if (opts.night) drawNight(ctx, cam, pano, opts.night, proj);
       drawSky(ctx, cam, pano, opts.sky, proj, pal, opts.night?.fade ?? 0);
+      drawSats(ctx, cam, pano, opts.sats, proj, pal);
     }
     if (pano && opts.showTerrain) {
       ctx.save();
@@ -179,6 +185,7 @@ export function renderView(
     if (opts.showSky) {
       if (opts.night) drawNight(ctx, cam, pano, opts.night, proj);
       drawSky(ctx, cam, pano, opts.sky, proj, pal, opts.night?.fade ?? 0);
+      drawSats(ctx, cam, pano, opts.sats, proj, pal);
     }
     if (pano) {
       drawGround(ctx, cam, pano, proj, pal);
@@ -219,7 +226,7 @@ function drawSky(
   const pxPerDeg = cam.width / cam.hfov;
   ctx.save();
   for (const b of bodies) {
-    const color = b.kind === 'sun' ? pal.sunPath : pal.moonPath;
+    const color = b.kind === 'sun' ? pal.sunPath : b.kind === 'moon' ? pal.moonPath : pal.accent;
     // Nachts tritt die Sonnenbahn hinter die Sterne zurück
     ctx.globalAlpha = b.kind === 'sun' ? 1 - 0.75 * nightFade : 1;
     ctx.strokeStyle = color;
@@ -240,13 +247,15 @@ function drawSky(
     }
     ctx.stroke();
     ctx.setLineDash([]);
-    // Volle Stunden: Punkt und Uhrzeit
+    // Volle Stunden (Satelliten: volle Minuten) mit Uhrzeit
     ctx.font = `600 11px ${FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
+    const minute = b.marks === 'minute';
     for (const p of b.path) {
       const d = new Date(p.t);
-      if (d.getMinutes() !== 0 || !aboveTerrain(pano, p.az, p.alt) || !azimuthInView(cam, p.az, 1)) continue;
+      const onMark = minute ? d.getSeconds() < 10 : d.getMinutes() === 0;
+      if (!onMark || !aboveTerrain(pano, p.az, p.alt) || !azimuthInView(cam, p.az, 1)) continue;
       const q = proj(p.az, p.alt);
       if (!q) continue;
       ctx.beginPath();
@@ -254,13 +263,14 @@ function drawSky(
       ctx.fill();
       ctx.lineWidth = 3;
       ctx.strokeStyle = pal.halo;
-      ctx.strokeText(String(d.getHours()), q[0], q[1] - 5);
-      ctx.fillText(String(d.getHours()), q[0], q[1] - 5);
+      const label = minute ? `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}` : String(d.getHours());
+      ctx.strokeText(label, q[0], q[1] - 5);
+      ctx.fillText(label, q[0], q[1] - 5);
     }
   }
   ctx.globalAlpha = 1;
   for (const b of bodies) {
-    if (!aboveTerrain(pano, b.az, b.alt) || !azimuthInView(cam, b.az, 2)) continue;
+    if (b.kind === 'track' || !aboveTerrain(pano, b.az, b.alt) || !azimuthInView(cam, b.az, 2)) continue;
     const q = proj(b.az, b.alt);
     if (!q) continue;
     const r = Math.max(7, DISC_RADIUS * pxPerDeg);
@@ -341,14 +351,47 @@ function drawNight(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaRes
     if (o.mag > night.magLimit + (o.kind === 'planet' ? 1.5 : 0) || (o.kind === 'star' && o.mag > 1.6) || !inView(o.az, o.alt)) continue;
     const q = proj(o.az, o.alt);
     if (!q) continue;
-    if (o.kind === 'planet') {
+    if (o.kind === 'deep') {
+      ctx.strokeStyle = `rgba(200, 190, 255, ${0.8 * f})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(q[0], q[1], 7, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (o.kind === 'planet') {
       ctx.fillStyle = `rgba(255, 236, 200, ${f})`;
       ctx.beginPath();
       ctx.arc(q[0], q[1], Math.min(4, Math.max(2, 2.8 - 0.4 * o.mag)), 0, Math.PI * 2);
       ctx.fill();
     }
-    ctx.fillStyle = o.kind === 'planet' ? `rgba(255, 220, 160, ${f})` : `rgba(225, 232, 250, ${0.85 * f})`;
-    ctx.fillText(o.name, q[0] + 6, q[1] - 6);
+    ctx.fillStyle = o.kind === 'planet' ? `rgba(255, 220, 160, ${f})` : o.kind === 'deep' ? `rgba(200, 190, 255, ${0.9 * f})` : `rgba(225, 232, 250, ${0.85 * f})`;
+    ctx.fillText(o.name, q[0] + (o.kind === 'deep' ? 10 : 6), q[1] - 6);
+  }
+  ctx.restore();
+}
+
+/** Satelliten: Punkt (hell, wenn mit bloßem Auge sichtbar), Name bei Raumstationen/Auswahl. */
+function drawSats(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaResult | null, sats: RenderOptions['sats'], proj: Project, pal: Palette) {
+  ctx.save();
+  ctx.font = `600 11px ${FONT}`;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  for (const s of sats) {
+    if (!aboveTerrain(pano, s.az, s.alt) || !azimuthInView(cam, s.az, 2)) continue;
+    const q = proj(s.az, s.alt);
+    if (!q) continue;
+    ctx.fillStyle = s.visible ? '#ffffff' : 'rgba(200, 206, 216, 0.7)';
+    ctx.strokeStyle = pal.halo;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.rect(q[0] - 3, q[1] - 3, 6, 6);
+    ctx.stroke();
+    ctx.fill();
+    if (s.label) {
+      ctx.lineWidth = 3;
+      ctx.strokeText(s.name, q[0] + 7, q[1]);
+      ctx.fillStyle = s.visible ? pal.text : pal.textMuted;
+      ctx.fillText(s.name, q[0] + 7, q[1]);
+    }
   }
   ctx.restore();
 }

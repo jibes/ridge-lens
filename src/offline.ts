@@ -31,6 +31,8 @@ export async function prefetchArea(center: LatLon, radius: number, onProgress: (
   const peaksBase = new URL(dir, import.meta.url);
   const indexUrl = new URL('index.json', peaksBase).href;
   urls.push({ url: indexUrl, cache: PEAKS });
+  // Satelliten-Bahnelemente (einige Tage brauchbar)
+  urls.push({ url: new URL('sats.json', peaksBase).href, cache: PEAKS });
   const index = (await fetch(indexUrl)
     .then((r) => (r.ok ? r.json() : null))
     .catch(() => null)) as { tiles?: string[] } | null;
@@ -49,8 +51,9 @@ export async function prefetchArea(center: LatLon, radius: number, onProgress: (
     for (let job = queue.shift(); job; job = queue.shift()) {
       try {
         const cache = await open(job.cache);
-        // Index immer frisch, Kacheln nur, wenn noch nicht gespeichert
-        const hit = job.url === indexUrl ? undefined : await cache.match(job.url);
+        // Index und Bahnelemente immer frisch, Kacheln nur, wenn noch nicht gespeichert
+        const fresh = job.url === indexUrl || job.url.endsWith('/sats.json');
+        const hit = fresh ? undefined : await cache.match(job.url);
         if (hit) {
           progress.bytes += Number(hit.headers.get('content-length')) || 0;
         } else {
