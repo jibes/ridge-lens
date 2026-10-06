@@ -8,7 +8,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "dev:phone": "vite --host --mode phone"
+    "dev:phone": "vite --host --mode phone",
+    "e2e": "node e2e/app.e2e.mjs"
   },
   "repository": {
     "type": "git",
@@ -21,6 +22,7 @@
   "homepage": "https://github.com/jibes/ridge-lens#readme",
   "devDependencies": {
     "@vitejs/plugin-basic-ssl": "^2.3.0",
+    "playwright-core": "^1.56.1",
     "typescript": "^7.0.2",
     "vite": "^8.3.2",
     "vitest": "^5.0.3"

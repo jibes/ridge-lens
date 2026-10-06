@@ -1,0 +1,26 @@
+name: End-to-end test
+
+# Läuft parallel zum Deploy und blockiert ihn nicht; rot heißt: Ablauf in der App kaputt
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright-core install --with-deps chromium
+      - run: npm run build
+      - run: npm run e2e
