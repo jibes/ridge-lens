@@ -7,7 +7,7 @@
 // Kachel:     [[id, lat, lon, ele|null, name, de, en, fr, it, fame, qid?], …] (leere Namen = "")
 //             fame = Zahl der Wikidata-Sitelinks (1 = Verweis, noch unbekannt; 0 = kein Verweis)
 // index.json: { generated, coverage: "global", osm, tiles: ["46_8", …] } (Kacheln ohne Gipfel fehlen)
-// meta.json:  { osm: Zeitpunkt des Auszugs }
+// meta.json:  { osm: Zeitpunkt des Auszugs, filter: osmium-Filter des Auszugs }
 // fame.json:  { Q1374: 75, … } (nur für den Build, wird nicht veröffentlicht)
 import { createReadStream } from 'node:fs';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
@@ -126,6 +126,7 @@ if (extract) {
     throw new Error(`nur ${rows.length} Gipfel im Auszug – Datensatz bleibt unverändert`);
   }
   meta.osm = new Date().toISOString();
+  meta.filter = process.env.PEAKS_OSM_FILTER ?? '';
 } else if (index?.coverage === 'global') {
   rows = await rowsFromTiles();
   console.log(`OSM-Stand vom ${meta.osm}, ${rows.length} Gipfel aus den Kacheln`);
