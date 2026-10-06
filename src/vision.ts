@@ -597,3 +597,160 @@ export class SkylineAccumulator {
     return best.cost < Infinity ? best : fail;
   }
 }
+
+/** Stern oder Planet mit Richtung (wahrer Horizont) und Helligkeit. */
+export interface StarRef {
+  az: number;
+  alt: number;
+  mag: number;
+}
+
+/** Heller Lichtpunkt im Bild: Richtung mit der übergebenen Kamera und Kontrast. */
+export interface StarBlob {
+  az: number;
+  el: number;
+  contrast: number;
+}
+
+/**
+ * Lichtpunkte am Nachthimmel: lokale Maxima deutlich über dem Hintergrund (Mittel 13×13),
+ * klein (Sterne sind punktförmig; Lampen, Mond, Wolkenränder nicht) und mindestens 4°
+ * über der Gelände-Silhouette (Lichter von Orten). Höchstens 25, die hellsten zuerst.
+ */
+export function detectStars(rgba: Uint8ClampedArray, w: number, h: number, cam: Camera, horizon: ArrayLike<number>, azStep: number): StarBlob[] {
+  const L = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) L[i] = 0.3 * rgba[i * 4] + 0.59 * rgba[i * 4 + 1] + 0.11 * rgba[i * 4 + 2];
+  // Integralbild für den Hintergrund
+  const I = new Float64Array((w + 1) * (h + 1));
+  for (let y = 0; y < h; y++) {
+    let row = 0;
+    for (let x = 0; x < w; x++) {
+      row += L[y * w + x];
+      I[(y + 1) * (w + 1) + x + 1] = I[y * (w + 1) + x + 1] + row;
+    }
+  }
+  const boxMean = (x0: number, y0: number, x1: number, y1: number) => {
+    x0 = Math.max(0, x0);
+    y0 = Math.max(0, y0);
+    x1 = Math.min(w, x1);
+    y1 = Math.min(h, y1);
+    const s = I[y1 * (w + 1) + x1] - I[y0 * (w + 1) + x1] - I[y1 * (w + 1) + x0] + I[y0 * (w + 1) + x0];
+    return s / Math.max(1, (x1 - x0) * (y1 - y0));
+  };
+  const R = 6;
+  const out: { x: number; y: number; contrast: number }[] = [];
+  for (let y = R; y < h - R; y++) {
+    for (let x = R; x < w - R; x++) {
+      const v = L[y * w + x];
+      if (v < 40) continue;
+      // lokales Maximum (3×3)
+      let isMax = true;
+      for (let dy = -1; dy <= 1 && isMax; dy++) for (let dx = -1; dx <= 1; dx++) if ((dx || dy) && L[(y + dy) * w + x + dx] > v) isMax = false;
+      if (!isMax) continue;
+      const bg = boxMean(x - R, y - R, x + R + 1, y + R + 1);
+      const contrast = v - bg;
+      if (contrast < 25) continue;
+      // Kompakt: über halbem Kontrast höchstens ein 3×3-Fleck, Ring in 4 px Abstand dunkel
+      const half = bg + contrast / 2;
+      let n = 0;
+      for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) if (L[(y + dy) * w + x + dx] > half) n++;
+      if (n > 9) continue;
+      let ring = 0;
+      for (const [dx, dy] of [[4, 0], [-4, 0], [0, 4], [0, -4], [3, 3], [-3, 3], [3, -3], [-3, -3]]) ring = Math.max(ring, L[(y + dy) * w + x + dx]);
+      if (ring > half) continue;
+      // Subpixel-Schwerpunkt
+      let sx = 0;
+      let sy = 0;
+      let sw = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const m = Math.max(0, L[(y + dy) * w + x + dx] - bg);
+          sx += m * dx;
+          sy += m * dy;
+          sw += m;
+        }
+      }
+      out.push({ x: x + 0.5 + sx / sw, y: y + 0.5 + sy / sw, contrast });
+    }
+  }
+  out.sort((a, b) => b.contrast - a.contrast);
+  const blobs: StarBlob[] = [];
+  for (const p of out) {
+    const [az, el] = screenToDir(cam, (p.x * cam.width) / w, (p.y * cam.height) / h);
+    // Abstand zur Silhouette: Lichter von Orten am Horizont, Neigungsfehler bis einige Grad
+    if (el < horizonAt(horizon, azStep, az) + 4) continue;
+    blobs.push({ az, el, contrast: p.contrast });
+    if (blobs.length >= 25) break;
+  }
+  return blobs;
+}
+
+/**
+ * Lichtpunkte den Sternen/Planeten zuordnen: Jede Paarung eines hellen Punkts mit
+ * einem Stern in der Nähe ergibt eine Hypothese (Kurs, Neigung); gewählt wird die, unter
+ * der die meisten Punkte auf einem Stern landen (≤ 0,35°). Verlangt ≥ 3 Treffer, eine
+ * eindeutige Lösung und kleine Restfehler; dann Mittel über die Treffer.
+ */
+export function matchStars(blobs: StarBlob[], refs: StarRef[], maxShift = 10): MatchResult & { inliers?: number } {
+  const fail = (reason: MatchResult['reason']): MatchResult => ({ ok: false, dHeading: 0, dPitch: 0, fovScale: 1, cost: Infinity, reason });
+  // Nahe am Zenit ist der Azimut instabil
+  const B = blobs.filter((b) => b.el < 70);
+  const S = refs.filter((r) => r.alt < 72);
+  if (B.length < 3 || S.length < 3) return fail('few-columns');
+  const RAD = Math.PI / 180;
+  const sep = (az1: number, el1: number, az2: number, el2: number) => Math.hypot(deltaAz(az1, az2) * Math.cos(((el1 + el2) / 2) * RAD), el1 - el2);
+  const pairs = (dh: number, dp: number) => {
+    const used = new Set<number>();
+    const out: { b: StarBlob; s: StarRef; d: number }[] = [];
+    for (const b of B) {
+      let best = -1;
+      let bd = 0.35;
+      for (let j = 0; j < S.length; j++) {
+        if (used.has(j)) continue;
+        const d = sep(b.az + dh, b.el + dp, S[j].az, S[j].alt);
+        if (d < bd) {
+          bd = d;
+          best = j;
+        }
+      }
+      if (best >= 0) {
+        used.add(best);
+        out.push({ b, s: S[best], d: bd });
+      }
+    }
+    return out;
+  };
+  const hyps: { dh: number; dp: number; n: number; err: number }[] = [];
+  for (const b of B.slice(0, 10)) {
+    for (const s of S) {
+      const dh = deltaAz(s.az, b.az);
+      const dp = s.alt - b.el;
+      if (Math.abs(dh) > maxShift || Math.abs(dp) > maxShift / 2) continue;
+      const m = pairs(dh, dp);
+      hyps.push({ dh, dp, n: m.length, err: m.reduce((a, p) => a + p.d, 0) / Math.max(1, m.length) });
+    }
+  }
+  if (!hyps.length) return fail('poor-fit');
+  hyps.sort((a, b) => b.n - a.n || a.err - b.err);
+  const best = hyps[0];
+  if (best.n < 3) return fail('poor-fit');
+  // Eindeutig: keine andere Lösung (anderer Kurs) mit ähnlich vielen Treffern
+  if (hyps.some((h) => (Math.abs(h.dh - best.dh) > 1 || Math.abs(h.dp - best.dp) > 1) && h.n >= best.n - (best.n >= 6 ? 1 : 0))) return fail('ambiguous');
+  // Verfeinern: zweimal neu zuordnen und mitteln
+  let dh = best.dh;
+  let dp = best.dp;
+  let m = pairs(dh, dp);
+  for (let k = 0; k < 2; k++) {
+    dh += m.reduce((a, p) => a + deltaAz(p.s.az, p.b.az + dh), 0) / m.length;
+    dp += m.reduce((a, p) => a + (p.s.alt - p.b.el - dp), 0) / m.length;
+    m = pairs(dh, dp);
+  }
+  if (m.length < 3) return fail('poor-fit');
+  const rms = Math.sqrt(m.reduce((a, p) => a + p.d * p.d, 0) / m.length);
+  if (rms > 0.2) return fail('poor-fit');
+  return { ok: true, dHeading: dh, dPitch: dp, fovScale: 1, cost: rms, inliers: m.length };
+}
+
+function deltaAz(a: number, b: number): number {
+  return ((((a - b) % 360) + 540) % 360) - 180;
+}

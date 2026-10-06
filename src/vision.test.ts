@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { Camera } from './projection';
-import { SkylineAccumulator, detectBody, extractSkyline, matchPitch, matchSkyline, matchSkylineHaze, screenToDir, searchWindows, type BodyTarget } from './vision';
-import { project } from './projection';
+import { project, type Camera } from './projection';
+import { SkylineAccumulator, detectBody, detectStars, matchStars, type StarRef, extractSkyline, matchPitch, matchSkyline, matchSkylineHaze, screenToDir, searchWindows, type BodyTarget } from './vision';
 
 const AZ_STEP = 0.1;
 const W = 390;
@@ -402,5 +401,79 @@ describe('panoramic accumulation', () => {
       flat.add(skylinePoints(t, t, level, { treesLeft: true, noSnow: true }), t, 0, 0, 0);
     }
     expect(flat.match([level], AZ_STEP, 1).ok).toBe(false);
+  });
+});
+
+describe('stars at night', () => {
+  const SW = 480;
+  const SH = Math.round((SW * H) / W);
+  const night: Camera = { heading: 120, pitch: 15, roll: 1, hfov: 50, width: W, height: H };
+  const horizon = new Float32Array(3600).fill(1.5);
+  // Pseudo-Zufall, reproduzierbar
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const catalog: StarRef[] = Array.from({ length: 40 }, () => ({ az: 60 + rnd() * 120, alt: 2 + rnd() * 55, mag: rnd() * 2.5 }));
+
+  function renderNight(truthCam: Camera, extras: { x: number; y: number }[] = []): Uint8ClampedArray {
+    const img = new Uint8ClampedArray(SW * SH * 4);
+    const L = new Float32Array(SW * SH);
+    for (let r = 0; r < SH; r++) {
+      for (let c = 0; c < SW; c++) {
+        const [, el] = screenToDir(truthCam, ((c + 0.5) * W) / SW, ((r + 0.5) * H) / SH);
+        L[r * SW + c] = el > 1.5 ? 18 + noise(6) : 8 + noise(4);
+        // Lichter der Stadt unter dem Horizont
+        if (el < 1.2 && el > -1 && (c * 7 + r * 3) % 23 === 0) L[r * SW + c] = 220;
+      }
+    }
+    const dot = (x: number, y: number, peak: number) => {
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          const xi = Math.floor(x) + dx;
+          const yi = Math.floor(y) + dy;
+          if (xi < 0 || yi < 0 || xi >= SW || yi >= SH) continue;
+          L[yi * SW + xi] += peak * Math.exp(-((xi + 0.5 - x) ** 2 + (yi + 0.5 - y) ** 2) / 0.8);
+        }
+      }
+    };
+    for (const s of catalog) {
+      const p = project(truthCam, s.az, s.alt);
+      if (p) dot((p[0] * SW) / W, (p[1] * SH) / H, 230 - 60 * s.mag);
+    }
+    for (const e of extras) dot(e.x, e.y, 200);
+    for (let i = 0; i < SW * SH; i++) img.set([L[i], L[i], L[i] * 1.05, 255], i * 4);
+    return img;
+  }
+
+  it('recovers heading and pitch from the star pattern', () => {
+    const sensor: Camera = { ...night, heading: night.heading - 4, pitch: night.pitch + 1.5 };
+    // Zwei Flugzeuge/Störpunkte
+    const img = renderNight(night, [{ x: 100, y: 120 }, { x: 300, y: 260 }]);
+    const blobs = detectStars(img, SW, SH, sensor, horizon, AZ_STEP);
+    expect(blobs.length).toBeGreaterThanOrEqual(5);
+    const m = matchStars(blobs, catalog);
+    expect(m.ok).toBe(true);
+    expect(Math.abs(sensor.heading + m.dHeading - night.heading)).toBeLessThan(0.15);
+    expect(Math.abs(sensor.pitch + m.dPitch - night.pitch)).toBeLessThan(0.15);
+  });
+
+  it('ignores city lights and rejects a starless sky', () => {
+    const empty = new Uint8ClampedArray(SW * SH * 4);
+    for (let r = 0; r < SH; r++) {
+      for (let c = 0; c < SW; c++) {
+        const [, el] = screenToDir(night, ((c + 0.5) * W) / SW, ((r + 0.5) * H) / SH);
+        const v = el > 1.5 ? 18 : (c * 7 + r * 3) % 23 === 0 && el > -1 ? 220 : 8;
+        empty.set([v, v, v, 255], (r * SW + c) * 4);
+      }
+    }
+    expect(detectStars(empty, SW, SH, night, horizon, AZ_STEP).length).toBe(0);
+    expect(matchStars([], catalog).ok).toBe(false);
+  });
+
+  it('never accepts a wrong solution from random points', () => {
+    for (let k = 0; k < 10; k++) {
+      const blobs = Array.from({ length: 12 }, () => ({ az: 90 + rnd() * 60, el: 3 + rnd() * 40, contrast: 100 }));
+      const m = matchStars(blobs, catalog);
+      expect(m.ok).toBe(false);
+    }
   });
 });

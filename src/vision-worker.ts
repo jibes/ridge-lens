@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 // Bildabgleich im Hintergrund, damit die Anzeige flüssig bleibt.
 import type { Camera } from './projection';
-import { SkylineAccumulator, detectBody, extractSkyline, matchPitch, matchSkylineHaze, searchWindows, type BodyTarget, type MatchResult } from './vision';
+import { SkylineAccumulator, detectBody, detectStars, matchStars, type StarRef, extractSkyline, matchPitch, matchSkylineHaze, searchWindows, type BodyTarget, type MatchResult } from './vision';
 
 export type VisionRequest =
   | { type: 'horizon'; horizon: Float32Array; haze: Float32Array[]; azStep: number }
@@ -18,6 +18,8 @@ export type VisionRequest =
       offPitch: number;
       /** Gerät wird geschwenkt: Bild nur fürs Rundumprofil sammeln. */
       moving: boolean;
+      /** Nachts: Bild in höherer Auflösung (Sterne sind punktförmig) und Sterne/Planeten im Blickfeld. */
+      stars?: { pixels: Uint8ClampedArray; cols: number; rows: number; refs: StarRef[] };
     };
 
 export interface VisionResponse {
@@ -25,7 +27,7 @@ export interface VisionResponse {
   cam: Camera;
   match: MatchResult;
   /** Woran ausgerichtet wurde; Sonne/Mond liefern keinen Bildwinkel. */
-  source: 'skyline' | 'pitch' | 'pano' | BodyTarget['kind'];
+  source: 'skyline' | 'pitch' | 'pano' | 'stars' | BodyTarget['kind'];
 }
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -63,6 +65,15 @@ self.onmessage = (ev: MessageEvent<VisionRequest>) => {
     return;
   }
   const match = matchSkylineHaze(points, [horizon, ...haze], azStep, cam, cols);
+  if (!match.ok && msg.stars) {
+    // Nachts: Sternmuster
+    const st = msg.stars;
+    const m = matchStars(detectStars(st.pixels, st.cols, st.rows, cam, horizon, azStep), st.refs);
+    if (m.ok) {
+      self.postMessage({ id: msg.id, cam, match: m, source: 'stars' } satisfies VisionResponse);
+      return;
+    }
+  }
   if (!match.ok) {
     // Ohne brauchbare Silhouette: Sonne bzw. Mond als Fixpunkt
     for (const body of msg.bodies) {

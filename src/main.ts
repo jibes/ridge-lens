@@ -1,12 +1,12 @@
 import { deltaDeg, normalizeDeg } from './geo';
 import { OrientationTracker } from './orientation';
 import { decimalYear, declination as magneticDeclination } from './magnetic';
-import { projector, type Camera } from './projection';
+import { azimuthInView, projector, type Camera } from './projection';
 import type { ComputeRequest, PanoramaResult, Peak, WorkerMessage } from './protocol';
 import { applyDom, compassLabels, detectLang, lang, setLang, storedLangChoice, storeLangChoice, t, type Lang } from './i18n';
 import { CameraFeed, DEFAULT_CAMERA_FOV, displayHfov, fitTilt, fovLongFromDisplay, type TiltSample } from './camera';
 import type { VisionRequest, VisionResponse } from './vision-worker';
-import type { BodyTarget, MatchResult } from './vision';
+import type { BodyTarget, MatchResult, StarRef } from './vision';
 import { CAMERA, DARK, LIGHT, renderOverview, renderView, turnToTarget, type PlacedLabel, type SkyBody } from './render';
 import { bodyPath, moonPosition, sunPosition, terrainEvents } from './astro';
 import { buildNightSky, prepareSky, type NightSky, type PreparedSky, type SkyData } from './nightsky';
@@ -950,7 +950,7 @@ function syncSensor() {
     (corrected ? ` · ${t('sensor.corrected', { offset: fmtSigned(manualAdj.heading) })}` : '') +
     (tracker.status === 'relative' ? ` · ${t('sensor.noCompass')}` : '') +
     (performance.now() - lastMatchAt < 3000
-      ? ` · ${t(({ skyline: 'sensor.matched', pitch: 'sensor.matchedPitch', pano: 'sensor.matchedPano', fov: 'sensor.matchedFov', sun: 'sensor.matchedSun', moon: 'sensor.matchedMoon' } as const)[lastMatchSource])}`
+      ? ` · ${t(({ skyline: 'sensor.matched', pitch: 'sensor.matchedPitch', pano: 'sensor.matchedPano', stars: 'sensor.matchedStars', fov: 'sensor.matchedFov', sun: 'sensor.matchedSun', moon: 'sensor.matchedMoon' } as const)[lastMatchSource])}`
       : '');
 }
 
@@ -971,6 +971,7 @@ const SOURCE_KEYS = {
   skyline: 'sensor.matched',
   pitch: 'sensor.matchedPitch',
   pano: 'sensor.matchedPano',
+  stars: 'sensor.matchedStars',
   fov: 'sensor.matchedFov',
   sun: 'sensor.matchedSun',
   moon: 'sensor.matchedMoon',
@@ -1352,6 +1353,7 @@ function visionTick() {
   visionCanvas.height = rows;
   visionCtx.drawImage(videoEl, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, cols, rows);
   const pixels = visionCtx.getImageData(0, 0, cols, rows).data;
+  const stars = !moving ? starFrame(vw, vh, sw, sh) : undefined;
   visionBusy = true;
   offsetPitchAtSend = totalPitchOffset();
   offsetHeadingAtSend = totalHeadingOffset();
@@ -1367,9 +1369,32 @@ function visionTick() {
       offHeading: totalHeadingOffset(),
       offPitch: totalPitchOffset(),
       moving,
+      stars,
     } satisfies VisionRequest,
-    [pixels.buffer],
+    stars ? [pixels.buffer, stars.pixels.buffer] : [pixels.buffer],
   );
+}
+
+/** Nachts: Ausschnitt in 480 px Breite (Sterne verschwinden beim starken Verkleinern) und Sterne im Blickfeld. */
+const starCanvas = document.createElement('canvas');
+const starCtx = starCanvas.getContext('2d', { willReadFrequently: true })!;
+function starFrame(vw: number, vh: number, sw: number, sh: number) {
+  if (!night || night.fade < 0.6) return undefined;
+  const refs: StarRef[] = [];
+  const inView = (az: number, alt: number) => alt > 3 && azimuthInView(cam, az, 12);
+  for (let i = 0; i < night.mag.length; i++) {
+    const az = night.pos[2 * i];
+    const alt = night.pos[2 * i + 1];
+    if (night.mag[i] < 2.5 && inView(az, alt)) refs.push({ az, alt, mag: night.mag[i] });
+  }
+  for (const o of night.objects) if (o.kind === 'planet' && o.mag < 2 && inView(o.az, o.alt)) refs.push({ az: o.az, alt: o.alt, mag: o.mag });
+  if (refs.length < 3) return undefined;
+  const cols = 480;
+  const rows = Math.round((cols * cam.height) / cam.width);
+  starCanvas.width = cols;
+  starCanvas.height = rows;
+  starCtx.drawImage(videoEl, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, cols, rows);
+  return { pixels: starCtx.getImageData(0, 0, cols, rows).data, cols, rows, refs };
 }
 
 /** Sonne (über dem Gelände) bzw. nachts der Mond als Fixpunkte für den Bildabgleich. */
