@@ -11,6 +11,8 @@ export interface ComputeRequest {
   eyeHeight: number;
   /** Bodenhöhe des Standorts (m); null = aus dem Höhenmodell. */
   groundElevation: number | null;
+  /** Aktuelle Blickrichtung: dieser Sektor wird zuerst berechnet. */
+  heading: number;
 }
 
 export interface Peak {
@@ -40,8 +42,10 @@ export interface PanoramaResult {
   /** Verwendete Augenhöhe über Meer (m). */
   h0: number;
   azStep: number;
-  /** Höhenwinkel der Silhouette je Azimut-Bin. */
+  /** Höhenwinkel der Silhouette je Azimut-Bin (NaN = noch nicht berechnet). */
   horizon: Float32Array;
+  /** false: erst der Sektor um die Blickrichtung; die volle Silhouette folgt per 'horizon'-Nachricht. */
+  complete: boolean;
   linePoints: Float32Array;
   lineOffsets: Uint32Array;
   peaks: Peak[];
@@ -66,4 +70,6 @@ export type WorkerMessage = { id: number } & (
   | { type: 'error'; key: Key; detail?: string }
   /** Nachgelieferte Gipfel einer weiteren Kachel. */
   | { type: 'peaks'; peaks: Peak[]; progress: PeakTileProgress; error: string | null }
+  /** Volle 360°-Silhouette und Kammlinien nach dem ersten Sektor. */
+  | { type: 'horizon'; horizon: Float32Array; linePoints: Float32Array; lineOffsets: Uint32Array }
 );

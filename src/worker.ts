@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 import { Dem, fetchTerrariumTile, metersPerPixel } from './dem';
-import { bearing, distance, elevationAngle, type LatLon } from './geo';
-import { castRay, extractRidges, linkRidges, observerGround, occlusionAngle, pruneLines, skylineRelief, type MercSampler, type RayOptions, type RidgePoint, type Sampler } from './panorama';
+import { bearing, deltaDeg, distance, elevationAngle, type LatLon } from './geo';
+import { castRay, extractRidges, linkRidges, observerGround, occlusionAngle, pruneLines, type MercSampler, type RayOptions, type RidgePoint, type Sampler } from './panorama';
 import { loadPeakTiles, tilesFor, type PeakRaw, type PeakTile } from './peaks';
 import type { Key } from './i18n';
 import type { ComputeRequest, PanoramaResult, Peak, PeakTileProgress, WorkerMessage } from './protocol';
@@ -20,6 +20,8 @@ const NEAR_RADIUS = 8000;
 
 /** Wartezeit auf die eigene Gipfelkachel (Gipfelhöhe als Standorthöhe), danach ohne weiter. */
 const FIRST_TILE_WAIT_MS = 8_000;
+/** Halbe Breite des zuerst berechneten Sektors um die Blickrichtung (Grad). */
+const SECTOR = 70;
 
 declare const self: DedicatedWorkerGlobalScope;
 let currentId = 0;
@@ -49,9 +51,12 @@ async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?
   const firstTile = tiles.next();
 
   const progress = (key: Key) => (done: number, total: number) => post({ id, type: 'progress', key, params: { done, total } });
+  // Blickrichtung zuerst: ferne Kacheln im Sektor (plus Umgebung), der Rest nach dem ersten Ergebnis
+  const inSector = (az: number, margin = 0) => Math.abs(deltaDeg(az, req.heading)) <= SECTOR + margin;
+  const sectorTile = (corners: LatLon[]) =>
+    corners.some((c) => distance(observer, c) < 20_000 || inSector(bearing(observer, c), 5));
   const nearLoad = await near.load(observer, NEAR_RADIUS, fetchTerrariumTile, progress('progress.tilesNear'));
-  const farLoad = await far.load(observer, req.radius, fetchTerrariumTile, progress('progress.tilesFar'));
-  const failed = nearLoad.failed + farLoad.failed;
+  const farLoad = await far.load(observer, req.radius, fetchTerrariumTile, progress('progress.tilesFar'), sectorTile);
   if (farLoad.total > 0 && farLoad.failed === farLoad.total) {
     throw new KeyedError('error.noTiles');
   }
@@ -97,22 +102,25 @@ async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?
     step: (d) => Math.max(10, Math.min(d * 0.01, d < NEAR_RADIUS ? nearRes : farRes)),
   };
 
-  post({ id, type: 'progress', key: 'progress.ridges', params: { pct: 0 } });
   const nBins = Math.round(360 / AZ_STEP);
-  const horizon = new Float32Array(nBins);
-  const bins: RidgePoint[][] = [];
+  const horizon = new Float32Array(nBins).fill(NaN);
+  const bins: RidgePoint[][] = Array.from({ length: nBins }, () => []);
   const ray = { dists: [] as number[], angles: [] as number[] };
-  for (let i = 0; i < nBins; i++) {
-    if (i > 0 && i % 360 === 0) post({ id, type: 'progress', key: 'progress.ridges', params: { pct: Math.round((100 * i) / nBins) } });
-    castRay(sampleMerc, observer, h0, i * AZ_STEP, rayOpts, ray);
-    const { ridges, horizon: hz } = extractRidges(ray.dists, ray.angles);
-    bins.push(ridges);
-    horizon[i] = hz;
-  }
+  let doneRays = 0;
+  const castBins = (pick: (az: number) => boolean) => {
+    for (let i = 0; i < nBins; i++) {
+      if (!pick(i * AZ_STEP)) continue;
+      if (++doneRays % 360 === 0) post({ id, type: 'progress', key: 'progress.ridges', params: { pct: Math.round((100 * doneRays) / nBins) } });
+      castRay(sampleMerc, observer, h0, i * AZ_STEP, rayOpts, ray);
+      const { ridges, horizon: hz } = extractRidges(ray.dists, ray.angles);
+      bins[i] = ridges;
+      horizon[i] = hz;
+    }
+  };
   // Lücken überbrücken, kurze Stücke (Rauschen in der Ferne) verwerfen
-  const lines = pruneLines(linkRidges(bins, AZ_STEP), horizon, AZ_STEP);
+  const link = () => pruneLines(linkRidges(bins, AZ_STEP), horizon, AZ_STEP);
 
-  /** Lage, Höhe und Sichtbarkeit je Gipfel. */
+  /** Lage, Höhe und Sichtbarkeit je Gipfel (Hervortreten berechnet der Hauptthread aus der Silhouette). */
   const process = (list: PeakRaw[]): Peak[] => {
     const out: Peak[] = [];
     for (const p of list) {
@@ -127,8 +135,7 @@ async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?
       const angle = elevationAngle(h0, ele, dist);
       const occ = occlusionAngle(sampleMerc, observer, h0, az, dist, rayOpts);
       const visible = angle >= occ - 0.05;
-      const relief = visible ? skylineRelief(horizon, AZ_STEP, az, angle) : 0;
-      out.push({ id: p.id, name: p.name, names: p.names, lat: p.lat, lon: p.lon, ele, eleFromOsm: useOsm, fame: p.fame, dist, az, angle, visible, relief });
+      out.push({ id: p.id, name: p.name, names: p.names, lat: p.lat, lon: p.lon, ele, eleFromOsm: useOsm, fame: p.fame, dist, az, angle, visible, relief: 0 });
     }
     return out;
   };
@@ -140,23 +147,38 @@ async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?
     }
   };
 
+  // 1. Sektor um die Blickrichtung
+  post({ id, type: 'progress', key: 'progress.ridges', params: { pct: 0 } });
+  castBins((az) => inSector(az));
+  const lines = link();
   if (ownTile) count(ownTile);
+  const sectorPeaks = raw.filter((p) => inSector(bearing(observer, p)));
   const result: PanoramaResult = {
     request: req,
     demElevation,
     h0,
     azStep: AZ_STEP,
-    // Kopie: das Original wird übertragen, nachgelieferte Gipfel brauchen es noch (skylineRelief)
     horizon: horizon.slice(),
+    complete: false,
     linePoints: lines.points,
     lineOffsets: lines.offsets,
-    peaks: process(raw),
+    peaks: process(sectorPeaks),
     peakError,
     peakTiles: { ...tileProgress },
-    failedTiles: failed,
+    failedTiles: nearLoad.failed + farLoad.failed,
     millis: performance.now() - t0,
   };
   post({ id, type: 'result', result }, [result.horizon.buffer, result.linePoints.buffer, result.lineOffsets.buffer]);
+
+  // 2. Restliche Kacheln und Strahlen, dann volle Silhouette und übrige Gipfel der eigenen Kachel
+  await far.load(observer, req.radius, fetchTerrariumTile);
+  if (id !== currentId) return;
+  castBins((az) => !inSector(az));
+  const all = link();
+  const full = horizon.slice();
+  post({ id, type: 'horizon', horizon: full, linePoints: all.points, lineOffsets: all.offsets }, [full.buffer, all.points.buffer, all.offsets.buffer]);
+  const rest = raw.filter((p) => !inSector(bearing(observer, p)));
+  if (rest.length) post({ id, type: 'peaks', peaks: process(rest), progress: { ...tileProgress }, error: peakError });
 
   // Übrige Kacheln nachliefern, solange keine neue Anfrage läuft
   let next = ownTile ? tiles.next() : firstTile;

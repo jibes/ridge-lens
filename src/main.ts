@@ -11,6 +11,7 @@ import { CAMERA, DARK, LIGHT, renderOverview, renderView, turnToTarget, type Pla
 import { bodyPath, moonPosition, sunPosition, terrainEvents } from './astro';
 import { buildNightSky, prepareSky, type NightSky, type PreparedSky, type SkyData } from './nightsky';
 import { searchPeaks } from './search';
+import { skylineRelief } from './panorama';
 
 interface Preset {
   name: string;
@@ -255,6 +256,7 @@ worker.onmessage = (ev: MessageEvent<WorkerMessage>) => {
   if (msg.id !== requestId) return;
   if (msg.type === 'peaks') {
     if (!pano) return;
+    applyRelief(pano, msg.peaks);
     pano.peaks.push(...msg.peaks);
     pano.peakTiles = msg.progress;
     pano.peakError = msg.error;
@@ -263,7 +265,21 @@ worker.onmessage = (ev: MessageEvent<WorkerMessage>) => {
     return;
   }
   if (msg.type === 'progress') {
-    setStatus(() => t(msg.key, msg.params));
+    // Nach dem ersten Sektor rechnet der Rest still weiter; Statuszeile bleibt beim Ergebnis
+    if (pano?.request.id !== msg.id) setStatus(() => t(msg.key, msg.params));
+    return;
+  }
+  if (msg.type === 'horizon') {
+    // Volle Silhouette nach dem ersten Sektor
+    if (!pano) return;
+    pano.horizon = msg.horizon;
+    pano.linePoints = msg.linePoints;
+    pano.lineOffsets = msg.lineOffsets;
+    pano.complete = true;
+    applyRelief(pano, pano.peaks);
+    showResultStatus(pano);
+    updateSky();
+    requestRender();
     return;
   }
   busy = false;
@@ -272,12 +288,21 @@ worker.onmessage = (ev: MessageEvent<WorkerMessage>) => {
     return;
   }
   pano = msg.result;
+  applyRelief(pano, pano.peaks);
   selected = null;
   updateAlignBar();
   showResultStatus(pano);
   updateSky();
   requestRender();
 };
+
+/** Hervortreten über die Silhouette (für die Label-Rangfolge); 0, solange die Silhouette dort fehlt. */
+function applyRelief(p: PanoramaResult, peaks: Peak[]) {
+  for (const peak of peaks) {
+    const r = peak.visible ? skylineRelief(p.horizon, p.azStep, peak.az, peak.angle) : 0;
+    peak.relief = Number.isFinite(r) ? r : 0;
+  }
+}
 
 function compute() {
   if (busy) return;
@@ -294,6 +319,7 @@ function compute() {
     radius: Math.min(250, Math.max(10, Number(radiusIn.value) || 100)) * 1000,
     eyeHeight: 1.7,
     groundElevation: eleIn.value ? Number(eleIn.value) : null,
+    heading: cam.heading,
   };
   busy = true;
   setStatus(() => t('status.start'));
@@ -1068,7 +1094,7 @@ function visionTick() {
   const pose = { heading: cam.heading, pitch: cam.pitch };
   const steady = lastPose && Math.abs(deltaDeg(pose.heading, lastPose.heading)) < 1.5 && Math.abs(pose.pitch - lastPose.pitch) < 1;
   lastPose = pose;
-  if (!autoAlignIn.checked || visionBusy || !steady || !pano || !sensorOn || !cameraShown() || document.hidden) return;
+  if (!autoAlignIn.checked || visionBusy || !steady || !pano || !pano.complete || !sensorOn || !cameraShown() || document.hidden) return;
   if (visionHorizon !== pano.horizon) {
     visionHorizon = pano.horizon;
     visionWorker.postMessage({ type: 'horizon', horizon: pano.horizon.slice(), azStep: pano.azStep } satisfies VisionRequest);

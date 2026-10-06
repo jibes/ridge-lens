@@ -392,6 +392,7 @@ function visibleBins(cam: Camera, pano: PanoramaResult): number[] {
 function drawGround(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaResult, proj: Project, pal: Palette) {
   const line: [number, number][] = [];
   for (const i of visibleBins(cam, pano)) {
+    if (!Number.isFinite(pano.horizon[i])) continue; // Sektor noch nicht berechnet
     const p = proj(i * pano.azStep, pano.horizon[i]);
     if (p) line.push(p);
   }
@@ -665,6 +666,7 @@ export function renderOverview(
     let lo = Infinity;
     let hi = -Infinity;
     for (const a of pano.horizon) {
+      if (!Number.isFinite(a)) continue;
       lo = Math.min(lo, a);
       hi = Math.max(hi, a);
     }
@@ -674,7 +676,7 @@ export function renderOverview(
     const y = (a: number) => H - ((a - lo) / (hi - lo)) * H;
     ctx.beginPath();
     ctx.moveTo(0, H);
-    for (let i = 0; i < n; i++) ctx.lineTo((i / n) * W, y(pano.horizon[i]));
+    for (let i = 0; i < n; i++) ctx.lineTo((i / n) * W, Number.isFinite(pano.horizon[i]) ? y(pano.horizon[i]) : H);
     ctx.lineTo(W, H);
     ctx.closePath();
     ctx.fillStyle = pal.overviewFill;

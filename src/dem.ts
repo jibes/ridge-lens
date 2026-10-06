@@ -22,6 +22,16 @@ export function lonLatToPixel(lat: number, lon: number, z: number): [number, num
   return [x, y];
 }
 
+/** Ecken und Mitte einer Kachel (Lat/Lon). */
+export function tileCorners(z: number, x: number, y: number): LatLon[] {
+  const n = 2 ** z;
+  const at = (tx: number, ty: number): LatLon => ({
+    lat: (Math.atan(Math.sinh(Math.PI * (1 - (2 * ty) / n))) * 180) / Math.PI,
+    lon: (tx / n) * 360 - 180,
+  });
+  return [at(x, y), at(x + 1, y), at(x, y + 1), at(x + 1, y + 1), at(x + 0.5, y + 0.5)];
+}
+
 /** Bodenauflösung eines Pixels in Metern. */
 export function metersPerPixel(lat: number, z: number): number {
   return (40_075_016.686 * Math.cos((lat * Math.PI) / 180)) / (TILE * 2 ** z);
@@ -128,6 +138,8 @@ export class Dem {
     radius: number,
     fetcher: TileFetcher,
     onProgress?: (done: number, total: number) => void,
+    /** Nur Kacheln laden, deren Ecken diese Bedingung erfüllen (z. B. Blickrichtung); Rest bei späterem Aufruf. */
+    filter?: (corners: LatLon[]) => boolean,
   ): Promise<{ total: number; failed: number }> {
     const corners = [0, 90, 180, 270].map((az) => destination(center, az, radius));
     const [x0, y0] = lonLatToPixel(corners[0].lat, corners[3].lon, this.z);
@@ -136,7 +148,7 @@ export class Dem {
     for (let ty = Math.floor(y0 / TILE); ty <= Math.floor(y1 / TILE); ty++) {
       for (let tx = Math.floor(x0 / TILE); tx <= Math.floor(x1 / TILE); tx++) {
         const x = ((tx % this.n) + this.n) % this.n;
-        if (ty >= 0 && ty < this.n && !this.tiles.has(this.key(x, ty))) jobs.push([x, ty]);
+        if (ty >= 0 && ty < this.n && !this.tiles.has(this.key(x, ty)) && (!filter || filter(tileCorners(this.z, x, ty)))) jobs.push([x, ty]);
       }
     }
     let done = 0;
