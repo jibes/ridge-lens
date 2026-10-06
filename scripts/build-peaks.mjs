@@ -7,7 +7,7 @@
 // beginnend in der Mitte der Alpen.
 //
 // Kachel:   [[id, lat, lon, ele|null, name, de, en, fr, it, fame], …] (leere Namen = "")
-//           fame = Zahl der Wikipedia-Sprachversionen laut Wikidata (1 = Verweis, Abfrage fehlgeschlagen; 0 = kein Verweis)
+//           fame = Zahl der Wikidata-Sitelinks (Wikipedia-Sprachversionen u. a.; 1 = Verweis, Abfrage fehlgeschlagen; 0 = kein Verweis)
 // index.json: { generated, region, blockSize, blocks: ["46_8", …], tiles: ["46_8", …] }
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 
@@ -71,23 +71,27 @@ async function query(s, w, size) {
 }
 
 /**
- * Zahl der Wikipedia-Sprachversionen je Wikidata-Id über den Query Service: eine
- * SPARQL-Abfrage je 800 Ids (die Einzel-API drosselt nach wenigen hundert Anfragen).
+ * Bekanntheit je Wikidata-Id: Zahl der Sitelinks (Wikipedia-Sprachversionen plus
+ * Wikivoyage/Commons) über den Query Service. `wikibase:sitelinks` ist vorberechnet,
+ * die Abfrage daher schnell; eine je 400 Ids (die Einzel-API drosselt nach wenigen
+ * hundert Anfragen). Nach drei Fehlschlägen in Folge Abbruch für diesen Block.
  * Bei Fehlern fehlt die Id in der Map.
  */
 async function sitelinkCounts(ids) {
   const out = new Map();
-  for (let i = 0; i < ids.length; i += 800) {
+  let failures = 0;
+  for (let i = 0; i < ids.length && failures < 3; i += 400) {
     if (left() < 60_000) break;
-    const values = ids.slice(i, i + 800).map((q) => `wd:${q}`).join(' ');
-    const query = `SELECT ?item (COUNT(?article) AS ?n) WHERE { VALUES ?item { ${values} } OPTIONAL { ?article schema:about ?item; schema:isPartOf ?site. ?site wikibase:wikiGroup "wikipedia". } } GROUP BY ?item`;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    const values = ids.slice(i, i + 400).map((q) => `wd:${q}`).join(' ');
+    const query = `SELECT ?item ?n WHERE { VALUES ?item { ${values} } ?item wikibase:sitelinks ?n }`;
+    let ok = false;
+    for (let attempt = 0; attempt < 3 && !ok; attempt++) {
       try {
         const res = await fetch(WIKIDATA_SPARQL, {
           method: 'POST',
           body: new URLSearchParams({ query, format: 'json' }),
           headers: { ...HEADERS, Accept: 'application/sparql-results+json' },
-          signal: AbortSignal.timeout(60_000),
+          signal: AbortSignal.timeout(30_000),
         });
         if (res.status === 429 || res.status === 503) {
           const wait = Math.min(60, Number(res.headers.get('retry-after')) || 10);
@@ -98,11 +102,12 @@ async function sitelinkCounts(ids) {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const body = await res.json();
         for (const b of body.results.bindings) out.set(b.item.value.replace(/^.*\//, ''), Number(b.n.value));
-        break;
+        ok = true;
       } catch (err) {
         console.warn(`  wikidata: ${err.name === 'TimeoutError' ? 'timeout' : err.message}`);
       }
     }
+    failures = ok ? 0 : failures + 1;
     await sleep(1000);
   }
   return out;
