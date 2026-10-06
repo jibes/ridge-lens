@@ -122,7 +122,30 @@ function loadOffset(): { heading: number; pitch: number } {
   return { heading: 0, pitch: 0 };
 }
 
-function saveOffset() {
+/** Woher eine Korrektur kam (für das Protokoll in den Sensordetails). */
+type OffsetSource = 'drag' | 'apply' | 'legacy' | 'reset' | 'fov' | VisionResponse['source'];
+const corrLog: { t: number; src: OffsetSource; dh: number; dp: number; h: number; p: number }[] = [];
+let loggedOffset = { ...offset };
+
+function saveOffset(src: OffsetSource) {
+  const dh = deltaDeg(offset.heading, loggedOffset.heading);
+  const dp = offset.pitch - loggedOffset.pitch;
+  if (Math.abs(dh) >= 0.05 || Math.abs(dp) >= 0.05) {
+    const now = Date.now();
+    const last = corrLog[corrLog.length - 1];
+    // Gleiche Quelle kurz hintereinander zusammenfassen
+    if (last && last.src === src && now - last.t < 10_000) {
+      last.dh += dh;
+      last.dp += dp;
+      last.t = now;
+      last.h = offset.heading;
+      last.p = offset.pitch;
+    } else {
+      corrLog.push({ t: now, src, dh, dp, h: offset.heading, p: offset.pitch });
+      if (corrLog.length > 8) corrLog.shift();
+    }
+    loggedOffset = { ...offset };
+  }
   try {
     localStorage.setItem(OFFSET_KEY, JSON.stringify({ ...offset, v: 2 }));
   } catch {
@@ -421,7 +444,7 @@ function rotateBy(dHeading: number, dPitch: number) {
     if (!manualCal) return;
     offset.heading = deltaDeg(offset.heading + dHeading, 0);
     offset.pitch = Math.max(-20, Math.min(20, offset.pitch + dPitch));
-    saveOffset();
+    saveOffset('drag');
   } else {
     cam.heading = normalizeDeg(cam.heading + dHeading);
     cam.pitch = Math.max(-30, Math.min(30, cam.pitch + dPitch));
@@ -567,7 +590,7 @@ alignApply.addEventListener('click', () => {
     // Korrektur so, dass Gipfel bzw. Sonne/Mond genau im Fadenkreuz liegen
     offset.heading = deltaDeg(sel.az, trueHeading(a.heading));
     offset.pitch = Math.max(-20, Math.min(20, sel.angle - a.pitch));
-    saveOffset();
+    saveOffset('apply');
     const correction = fmtSigned(offset.heading);
     setStatus(() => t('align.done', { name: sel.name, offset: correction }));
   } else if (!sensorOn) {
@@ -852,7 +875,7 @@ function updateDeclination(lat: number, lon: number) {
   if (legacyOffset) {
     offset.heading = deltaDeg(offset.heading - declination, 0);
     legacyOffset = false;
-    saveOffset();
+    saveOffset('legacy');
   }
   declinationEl.hidden = false;
   showDeclination();
@@ -914,6 +937,30 @@ function updateNoise() {
   const n = sensorOn && panel.hidden === false ? tracker.noise : null;
   noiseEl.hidden = !n;
   if (n) noiseEl.textContent = t('settings.noise', { h: n.heading.toFixed(1), p: n.pitch.toFixed(1), r: n.roll.toFixed(1) });
+  if (panel.hidden === false) showCorrLog();
+}
+
+const corrLogEl = $<HTMLParagraphElement>('corr-log');
+const SOURCE_KEYS = {
+  skyline: 'sensor.matched',
+  pitch: 'sensor.matchedPitch',
+  pano: 'sensor.matchedPano',
+  fov: 'sensor.matchedFov',
+  sun: 'sensor.matchedSun',
+  moon: 'sensor.matchedMoon',
+  drag: 'log.drag',
+  apply: 'log.apply',
+  legacy: 'log.legacy',
+  reset: 'log.reset',
+} as const;
+function showCorrLog() {
+  const head = t('log.title', { h: fmtSigned(offset.heading), p: fmtSigned(offset.pitch) });
+  const time = (ms: number) => new Date(ms).toLocaleTimeString(lang(), { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const lines = corrLog
+    .slice()
+    .reverse()
+    .map((e) => `${time(e.t)} ${t(SOURCE_KEYS[e.src])}: ${t('log.delta', { dh: fmtSigned(e.dh), dp: fmtSigned(e.dp) })}`);
+  corrLogEl.textContent = [head, ...lines].join('\n');
 }
 
 /** Sensormodus ist an, sobald Orientierungsdaten kommen; vorher und ohne Sensor: manuell. */
@@ -939,7 +986,7 @@ function startSensors() {
 $<HTMLButtonElement>('offset-reset').addEventListener('click', () => {
   offset.heading = 0;
   offset.pitch = 0;
-  saveOffset();
+  saveOffset('reset');
   requestRender();
 });
 
@@ -1332,7 +1379,7 @@ function calibrateFromTilt(match: MatchResult, snap: Camera): boolean {
   cameraFov = Math.min(120, Math.max(30, fovLongFromDisplay(hfov, w, h, snap.width, snap.height)));
   saveCameraFov();
   offset.pitch = Math.max(-20, Math.min(20, fit.pitch));
-  saveOffset();
+  saveOffset('fov');
   tiltSamples = [];
   return true;
 }
@@ -1354,7 +1401,7 @@ visionWorker.onmessage = (ev: MessageEvent<VisionResponse>) => {
   // Korrekturen beziehen sich auf die Kamera zum Aufnahmezeitpunkt; Offsets sind darin enthalten
   offset.heading = deltaDeg(offset.heading + VISION_GAIN * match.dHeading, 0);
   offset.pitch = Math.max(-20, Math.min(20, offset.pitch + VISION_GAIN * match.dPitch));
-  saveOffset();
+  saveOffset(source);
   if (source === 'skyline') {
     const { w, h } = cameraFeed.size;
     const hfov = snap.hfov * (1 + VISION_GAIN * (match.fovScale - 1));

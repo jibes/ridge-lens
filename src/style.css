@@ -498,3 +498,8 @@ form details.more {
 .time-row input {
   flex: 1;
 }
+
+#corr-log {
+  white-space: pre-line;
+  font-variant-numeric: tabular-nums;
+}
