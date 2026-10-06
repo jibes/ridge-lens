@@ -50,6 +50,14 @@ Sonne und Mond (mit Phase) erscheinen an ihrer scheinbaren Position, mit gestric
 
 Automatischer Abgleich: Findet sich keine brauchbare Silhouette, dient die Sonne (bzw. nachts der Mond) als Fixpunkt – genau ein heller, runder, kompakter Fleck im Suchfenster um die berechnete Lage, über dem Grat (`detectBody` in `src/vision.ts`). Korrigiert Kurs und Neigung, nicht den Bildwinkel.
 
+## Sterne, Sternbilder, Planeten
+
+Mit der Dämmerung (Sonne unter −4°, voll ab −14°) erscheinen Sterne bis 5,5 mag (Größe/Farbe nach Helligkeit und B−V), Sternbildlinien und -namen in der UI-Sprache, die hellsten Sternnamen und die Planeten Merkur–Saturn – hinter dem Gelände verdeckt. Bei hellem System wechselt die Darstellung nachts ins dunkle Schema. Planeten und helle Sterne lassen sich antippen (Höhe, Helligkeit) und zum Ausrichten des Kompasses verwenden.
+
+In den Einstellungen lässt sich der **Zeitpunkt** wählen (gilt auch für Sonne/Mond und Auf-/Untergänge), z. B. „Wo steht die Milchstraße um 23 Uhr über dem Grat?“.
+
+Technik: `src/nightsky.ts`, Rechnung in `src/astro.ts` (Präzession J2000 → Datum, Planeten nach JPL-Bahnelementen, geprüft u. a. an der Großen Konjunktion 2020 und der Mars-Opposition 2020). Daten `public/sky/sky.json` (≈ 100 KB, gzip 38 KB) aus dem npm-Paket d3-celestial (BSD, Sterne nach XHIP, Sternbilder nach IAU), erzeugt mit `node scripts/build-sky.mjs <d3-celestial/data>`.
+
 ## Sensormodus
 
 Der Blick folgt dem Handy, das Fadenkreuz markiert die Blickrichtung der Rückkamera.
@@ -84,7 +92,7 @@ Technik (`src/orientation.ts`): Rotationsmatrix aus α/β/γ (W3C), Blickachse =
 
 ## Datenquellen
 
-Höhendaten: AWS Terrain Tiles ([Quellen](https://github.com/tilezen/joerd/blob/master/docs/attribution.md)). Gipfel: © OpenStreetMap-Mitwirkende, [ODbL](https://www.openstreetmap.org/copyright); gilt auch für den mitgelieferten Datensatz (`public/peaks`, Branch `peaks-data`).
+Höhendaten: AWS Terrain Tiles ([Quellen](https://github.com/tilezen/joerd/blob/master/docs/attribution.md)). Sterne/Sternbilder: [d3-celestial](https://github.com/ofrohn/d3-celestial) (BSD-3, Olaf Frohn; XHIP, IAU). Gipfel: © OpenStreetMap-Mitwirkende, [ODbL](https://www.openstreetmap.org/copyright); gilt auch für den mitgelieferten Datensatz (`public/peaks`, Branch `peaks-data`).
 
 ## Lizenz
 

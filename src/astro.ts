@@ -204,3 +204,129 @@ export function terrainEvents(path: PathPoint[], horizonAt: (az: number) => numb
   }
   return { rise, set };
 }
+
+// --- Sterne und Planeten --------------------------------------------------------------
+
+/**
+ * Präzession J2000 → Datum (Meeus 21.3), Grad. Über 26 Jahre ≈ 0,36° – sichtbar
+ * gegenüber dem Gelände, daher nötig; Nutation/Aberration (< 0,01°) entfallen.
+ */
+export function precess(ra: number, dec: number, jd: number): { ra: number; dec: number } {
+  const T = (jd - 2_451_545) / 36_525;
+  const zeta = (2306.2181 * T + 0.30188 * T * T + 0.017998 * T ** 3) / 3600;
+  const z = (2306.2181 * T + 1.09468 * T * T + 0.018203 * T ** 3) / 3600;
+  const theta = (2004.3109 * T - 0.42665 * T * T - 0.041833 * T ** 3) / 3600;
+  const A = cos(dec) * sin(ra + zeta);
+  const B = cos(theta) * cos(dec) * cos(ra + zeta) - sin(theta) * sin(dec);
+  const C = sin(theta) * cos(dec) * cos(ra + zeta) + cos(theta) * sin(dec);
+  return { ra: norm(Math.atan2(A, B) / RAD + z), dec: Math.asin(Math.max(-1, Math.min(1, C))) / RAD };
+}
+
+/** J2000-Koordinaten (Grad) → scheinbare Lage am Standort (mit Präzession und Refraktion). */
+export function starPosition(ra2000: number, dec2000: number, date: Date, lat: number, lon: number): SkyPosition {
+  const jd = julianDate(date);
+  const { ra, dec } = precess(ra2000, dec2000, jd);
+  const p = toHorizontal(ra, dec, jd, lat, lon);
+  return { az: p.az, alt: p.alt + refraction(p.alt) };
+}
+
+/**
+ * Viele Sterne auf einmal (gleiche Zeit/Ort): schreibt Azimut und Höhe in `out`
+ * (je zwei Werte pro Stern). Präzession als Drehung einmal pro Aufruf bestimmt.
+ */
+export function starsToHorizontal(radec: ArrayLike<number>, date: Date, lat: number, lon: number, out: Float32Array): void {
+  const jd = julianDate(date);
+  const T = (jd - 2_451_545) / 36_525;
+  const zeta = (2306.2181 * T + 0.30188 * T * T) / 3600;
+  const z = (2306.2181 * T + 1.09468 * T * T) / 3600;
+  const theta = (2004.3109 * T - 0.42665 * T * T) / 3600;
+  const lst = gmst(jd) + lon;
+  const sl = sin(lat);
+  const cl = cos(lat);
+  const ct = cos(theta);
+  const st = sin(theta);
+  for (let i = 0, n = radec.length / 2; i < n; i++) {
+    const a0 = radec[2 * i] + zeta;
+    const d0 = radec[2 * i + 1];
+    const cd = cos(d0);
+    const A = cd * sin(a0);
+    const B = ct * cd * cos(a0) - st * sin(d0);
+    const C = st * cd * cos(a0) + ct * sin(d0);
+    const ra = Math.atan2(A, B) / RAD + z;
+    const sd = Math.max(-1, Math.min(1, C));
+    const cdec = Math.sqrt(1 - sd * sd);
+    const H = lst - ra;
+    const sinAlt = sl * sd + cl * cdec * cos(H);
+    const alt = Math.asin(sinAlt) / RAD;
+    const az = Math.atan2(-cdec * sin(H), sd * cl - cdec * sl * cos(H)) / RAD;
+    out[2 * i] = norm(az);
+    out[2 * i + 1] = alt + refraction(alt);
+  }
+}
+
+export type PlanetId = 'mercury' | 'venus' | 'mars' | 'jupiter' | 'saturn';
+
+/**
+ * Bahnelemente J2000 und Änderung pro Jahrhundert (JPL, „Approximate Positions of the
+ * Planets“, Tabelle 1, 1800–2050): a (AE), e, i, L, ϖ, Ω (Grad). Genauigkeit einige Bogenminuten.
+ */
+const ELEMENTS: Record<PlanetId | 'earth', number[][]> = {
+  mercury: [[0.38709927, 0.20563593, 7.00497902, 252.2503235, 77.45779628, 48.33076593], [0.00000037, 0.00001906, -0.00594749, 149472.67411175, 0.16047689, -0.12534081]],
+  venus: [[0.72333566, 0.00677672, 3.39467605, 181.9790995, 131.60246718, 76.67984255], [0.0000039, -0.00004107, -0.0007889, 58517.81538729, 0.00268329, -0.27769418]],
+  earth: [[1.00000261, 0.01671123, -0.00001531, 100.46457166, 102.93768193, 0], [0.00000562, -0.00004392, -0.01294668, 35999.37244981, 0.32327364, 0]],
+  mars: [[1.52371034, 0.0933941, 1.84969142, -4.55343205, -23.94362959, 49.55953891], [0.00001847, 0.00007882, -0.00813131, 19140.30268499, 0.44441088, -0.29257343]],
+  jupiter: [[5.202887, 0.04838624, 1.30439695, 34.39644051, 14.72847983, 100.47390909], [-0.00011607, -0.00013253, -0.00183714, 3034.74612775, 0.21252668, 0.20469106]],
+  saturn: [[9.53667594, 0.05386179, 2.48599187, 49.95424423, 92.59887831, 113.66242448], [-0.0012506, -0.00050991, 0.00193609, 1222.49362201, -0.41897216, -0.28867794]],
+};
+
+/** Heliozentrische ekliptikale Koordinaten J2000 (AE). */
+function heliocentric(id: PlanetId | 'earth', T: number): [number, number, number] {
+  const [el, rate] = ELEMENTS[id];
+  const [a, e, I, L, w, O] = el.map((v, k) => v + rate[k] * T);
+  const M = norm(L - w + 180) - 180;
+  let E = M + (e / RAD) * sin(M);
+  for (let k = 0; k < 6; k++) E -= (E - (e / RAD) * sin(E) - M) / (1 - e * cos(E));
+  const xp = a * (cos(E) - e);
+  const yp = a * Math.sqrt(1 - e * e) * sin(E);
+  const om = w - O;
+  const x = (cos(om) * cos(O) - sin(om) * sin(O) * cos(I)) * xp + (-sin(om) * cos(O) - cos(om) * sin(O) * cos(I)) * yp;
+  const y = (cos(om) * sin(O) + sin(om) * cos(O) * cos(I)) * xp + (-sin(om) * sin(O) + cos(om) * cos(O) * cos(I)) * yp;
+  const zz = sin(om) * sin(I) * xp + cos(om) * sin(I) * yp;
+  return [x, y, zz];
+}
+
+/** Helligkeit (mag) aus Abstand Sonne r, Erde Δ und Phasenwinkel i (Grad), Näherungen nach Meeus 41. */
+function planetMagnitude(id: PlanetId, r: number, delta: number, i: number): number {
+  const d = 5 * Math.log10(r * delta);
+  switch (id) {
+    case 'mercury':
+      return -0.42 + d + 0.038 * i - 0.000273 * i * i + 0.000002 * i ** 3;
+    case 'venus':
+      return -4.4 + d + 0.0009 * i + 0.000239 * i * i - 0.00000065 * i ** 3;
+    case 'mars':
+      return -1.52 + d + 0.016 * i;
+    case 'jupiter':
+      return -9.4 + d + 0.005 * i;
+    case 'saturn':
+      return -8.88 + d;
+  }
+}
+
+export const PLANETS: PlanetId[] = ['mercury', 'venus', 'mars', 'jupiter', 'saturn'];
+
+/** Geozentrische J2000-Koordinaten (RA/Dec, Grad) und Helligkeit eines Planeten. */
+export function planetEquatorial(id: PlanetId, date: Date): { ra: number; dec: number; mag: number } {
+  const T = (julianDate(date) - 2_451_545) / 36_525;
+  const p = heliocentric(id, T);
+  const e = heliocentric('earth', T);
+  const g = [p[0] - e[0], p[1] - e[1], p[2] - e[2]];
+  const eps = 23.43928;
+  const xq = g[0];
+  const yq = cos(eps) * g[1] - sin(eps) * g[2];
+  const zq = sin(eps) * g[1] + cos(eps) * g[2];
+  const delta = Math.hypot(xq, yq, zq);
+  const r = Math.hypot(p[0], p[1], p[2]);
+  const R = Math.hypot(e[0], e[1], e[2]);
+  const phase = Math.acos(Math.max(-1, Math.min(1, (r * r + delta * delta - R * R) / (2 * r * delta)))) / RAD;
+  return { ra: norm(Math.atan2(yq, xq) / RAD), dec: Math.asin(zq / delta) / RAD, mag: planetMagnitude(id, r, delta, phase) };
+}

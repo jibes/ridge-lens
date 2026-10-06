@@ -417,6 +417,7 @@ label.check {
   color: var(--fg);
 }
 input[type='number'],
+input[type='datetime-local'],
 select {
   width: 100%;
   min-width: 0;
@@ -454,4 +455,11 @@ label.lang,
 }
 .credits a {
   color: inherit;
+}
+.time-row {
+  display: flex;
+  gap: 8px;
+}
+.time-row input {
+  flex: 1;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bodyPath, julianDate, moonEcliptic, moonPosition, sunEcliptic, sunPosition, terrainEvents, toEquatorial } from './astro';
+import { bodyPath, julianDate, moonEcliptic, moonPosition, planetEquatorial, precess, starPosition, starsToHorizontal, sunEcliptic, sunPosition, terrainEvents, toEquatorial } from './astro';
 
 const RAD = Math.PI / 180;
 /** Winkelabstand zweier Himmelspositionen (Grad). */
@@ -65,5 +65,52 @@ describe('astro', () => {
     expect(flat.set! - ridge.set!).toBeGreaterThan(50 * 60_000);
     // Tag-und-Nacht-Gleiche: ≈ 12 h über dem flachen Horizont (Refraktion verlängert leicht)
     expect((flat.set! - flat.rise!) / 3_600_000).toBeCloseTo(12.1, 0);
+  });
+});
+
+/** Winkelabstand zweier Äquatorpositionen (Grad). */
+function sepEq(a: { ra: number; dec: number }, b: { ra: number; dec: number }): number {
+  return separation({ az: a.ra, alt: a.dec }, { az: b.ra, alt: b.dec });
+}
+
+describe('stars and planets', () => {
+  it('precession: Meeus example 21.b (θ Persei, ohne Eigenbewegung)', () => {
+    const p = precess(41.054063, 49.22775, 2_462_088.69);
+    expect(p.ra).toBeCloseTo(41.5431, 2);
+    expect(p.dec).toBeCloseTo(49.3492, 2);
+  });
+
+  it('bulk conversion matches single star', () => {
+    const radec = new Float32Array([101.287, -16.716, 213.915, 19.182, 279.234, 38.784]);
+    const out = new Float32Array(6);
+    const d = new Date(Date.UTC(2026, 9, 6, 21, 0));
+    starsToHorizontal(radec, d, 47.0566, 8.4851, out);
+    for (let i = 0; i < 3; i++) {
+      const p = starPosition(radec[2 * i], radec[2 * i + 1], d, 47.0566, 8.4851);
+      expect(out[2 * i]).toBeCloseTo(p.az, 2);
+      expect(out[2 * i + 1]).toBeCloseTo(p.alt, 2);
+    }
+  });
+
+  it('Venus: Meeus example 33.a (1992-12-20)', () => {
+    const d = new Date(Date.UTC(1992, 11, 20));
+    const v = planetEquatorial('venus', d);
+    const now = precess(v.ra, v.dec, julianDate(d));
+    expect(sepEq(now, { ra: 316.1727, dec: -18.888 })).toBeLessThan(0.1);
+    expect(v.mag).toBeLessThan(-3.9);
+  });
+
+  it('great conjunction Jupiter–Saturn 2020-12-21: 0.1° apart', () => {
+    const d = new Date(Date.UTC(2020, 11, 21, 18));
+    expect(sepEq(planetEquatorial('jupiter', d), planetEquatorial('saturn', d))).toBeLessThan(0.2);
+  });
+
+  it('Mars opposition 2020-10-13: opposite the sun, very bright', () => {
+    const d = new Date(Date.UTC(2020, 9, 13, 23));
+    const m = planetEquatorial('mars', d);
+    const s = sunEcliptic(julianDate(d));
+    const se = toEquatorial(s.lon, 0, 23.43928);
+    expect(sepEq(m, se)).toBeGreaterThan(170);
+    expect(m.mag).toBeLessThan(-2.3);
   });
 });

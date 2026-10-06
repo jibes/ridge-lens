@@ -2,6 +2,7 @@ import { deltaDeg, normalizeDeg } from './geo';
 import { azimuthInView, projector, type Camera } from './projection';
 import type { PanoramaResult, Peak } from './protocol';
 import type { PathPoint } from './astro';
+import type { NightSky } from './nightsky';
 
 const DIST_CLASSES = 10;
 const RAD = Math.PI / 180;
@@ -111,6 +112,8 @@ export interface RenderOptions {
   compass: string[];
   /** Sonne und Mond (leer = nicht zeichnen). */
   sky: SkyBody[];
+  /** Sterne, Sternbilder, Planeten (null = nicht geladen). */
+  night: NightSky | null;
 }
 
 /** Sonne oder Mond zum Zeichnen: aktuelle Lage und Tagesbahn. */
@@ -145,7 +148,8 @@ export function renderView(
   const proj = projector(cam);
   if (opts.overlay) {
     ctx.clearRect(0, 0, W, H);
-    drawSky(ctx, cam, pano, opts.sky, proj, pal);
+    if (opts.night) drawNight(ctx, cam, pano, opts.night, proj);
+    drawSky(ctx, cam, pano, opts.sky, proj, pal, opts.night?.fade ?? 0);
     if (pano) {
       ctx.save();
       ctx.shadowColor = 'rgba(0,0,0,0.6)';
@@ -159,7 +163,13 @@ export function renderView(
     sky.addColorStop(1, pal.skyBottom);
     ctx.fillStyle = sky;
     ctx.fillRect(0, 0, W, H);
-    drawSky(ctx, cam, pano, opts.sky, proj, pal);
+    if (opts.night && opts.night.fade > 0) {
+      // Himmel nachts abdunkeln, auch im hellen Farbschema
+      ctx.fillStyle = `rgba(5, 8, 16, ${0.9 * opts.night.fade})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+    if (opts.night) drawNight(ctx, cam, pano, opts.night, proj);
+    drawSky(ctx, cam, pano, opts.sky, proj, pal, opts.night?.fade ?? 0);
     if (pano) {
       drawGround(ctx, cam, pano, proj, pal);
       drawLines(ctx, cam, pano, proj, pal);
@@ -188,11 +198,21 @@ function aboveTerrain(pano: PanoramaResult | null, az: number, alt: number): boo
 }
 
 /** Tagesbahnen mit Stundenmarken, dann die Scheiben; hinter dem Gelände ausgeblendet. */
-function drawSky(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaResult | null, bodies: SkyBody[], proj: Project, pal: Palette) {
+function drawSky(
+  ctx: CanvasRenderingContext2D,
+  cam: Camera,
+  pano: PanoramaResult | null,
+  bodies: SkyBody[],
+  proj: Project,
+  pal: Palette,
+  nightFade: number,
+) {
   const pxPerDeg = cam.width / cam.hfov;
   ctx.save();
   for (const b of bodies) {
     const color = b.kind === 'sun' ? pal.sunPath : pal.moonPath;
+    // Nachts tritt die Sonnenbahn hinter die Sterne zurück
+    ctx.globalAlpha = b.kind === 'sun' ? 1 - 0.75 * nightFade : 1;
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
     ctx.lineWidth = 1.5;
@@ -229,6 +249,7 @@ function drawSky(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaResul
       ctx.fillText(String(d.getHours()), q[0], q[1] - 5);
     }
   }
+  ctx.globalAlpha = 1;
   for (const b of bodies) {
     if (!aboveTerrain(pano, b.az, b.alt) || !azimuthInView(cam, b.az, 2)) continue;
     const q = proj(b.az, b.alt);
@@ -249,6 +270,76 @@ function drawSky(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaResul
     } else {
       drawMoon(ctx, b, q, r, proj);
     }
+  }
+  ctx.restore();
+}
+
+/** Sternfarbe aus dem Farbindex B−V. */
+function starColor(bv: number): string {
+  return bv < 0 ? '#b4cbff' : bv < 0.5 ? '#f3f6ff' : bv < 1 ? '#fff0cf' : '#ffd0a0';
+}
+
+/** Sternbildlinien, Sterne nach Helligkeit, Namen, Planeten – hinter dem Gelände verdeckt. */
+function drawNight(ctx: CanvasRenderingContext2D, cam: Camera, pano: PanoramaResult | null, night: NightSky, proj: Project) {
+  const f = night.fade;
+  if (f <= 0) return;
+  const inView = (az: number, alt: number) => aboveTerrain(pano, az, alt) && azimuthInView(cam, az, 2);
+  ctx.save();
+  // Linien
+  ctx.strokeStyle = `rgba(140, 170, 230, ${0.4 * f})`;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  const L = night.lines;
+  for (let k = 0; k < L.length; k += 4) {
+    if (!inView(L[k], L[k + 1]) || !inView(L[k + 2], L[k + 3])) continue;
+    const a = proj(L[k], L[k + 1]);
+    const b = proj(L[k + 2], L[k + 3]);
+    if (!a || !b) continue;
+    ctx.moveTo(a[0], a[1]);
+    ctx.lineTo(b[0], b[1]);
+  }
+  ctx.stroke();
+  // Sterne: Größe und Deckkraft nach Helligkeit
+  const P = night.pos;
+  for (let i = 0; i < night.mag.length; i++) {
+    const m = night.mag[i];
+    if (m > night.magLimit) break; // nach Helligkeit sortiert
+    if (!inView(P[2 * i], P[2 * i + 1])) continue;
+    const q = proj(P[2 * i], P[2 * i + 1]);
+    if (!q || q[0] < 0 || q[0] > cam.width || q[1] < 0 || q[1] > cam.height) continue;
+    const r = Math.min(3.4, Math.max(0.7, 2.6 - 0.42 * m));
+    ctx.globalAlpha = f * Math.min(1, Math.max(0.25, (night.magLimit - m) / 1.5 + 0.25));
+    ctx.fillStyle = starColor(night.bv[i]);
+    ctx.beginPath();
+    ctx.arc(q[0], q[1], r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  // Sternbildnamen
+  ctx.font = `500 10.5px ${FONT}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = `rgba(170, 192, 235, ${0.75 * f})`;
+  for (const l of night.labels) {
+    if (!inView(l.az, l.alt)) continue;
+    const q = proj(l.az, l.alt);
+    if (q) ctx.fillText(l.text.toUpperCase(), q[0], q[1]);
+  }
+  // Planeten und helle Sterne mit Namen
+  ctx.textAlign = 'left';
+  ctx.font = `600 11px ${FONT}`;
+  for (const o of night.objects) {
+    if (o.mag > night.magLimit + (o.kind === 'planet' ? 1.5 : 0) || (o.kind === 'star' && o.mag > 1.6) || !inView(o.az, o.alt)) continue;
+    const q = proj(o.az, o.alt);
+    if (!q) continue;
+    if (o.kind === 'planet') {
+      ctx.fillStyle = `rgba(255, 236, 200, ${f})`;
+      ctx.beginPath();
+      ctx.arc(q[0], q[1], Math.min(4, Math.max(2, 2.8 - 0.4 * o.mag)), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = o.kind === 'planet' ? `rgba(255, 220, 160, ${f})` : `rgba(225, 232, 250, ${0.85 * f})`;
+    ctx.fillText(o.name, q[0] + 6, q[1] - 6);
   }
   ctx.restore();
 }

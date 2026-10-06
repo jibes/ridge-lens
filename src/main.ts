@@ -9,6 +9,7 @@ import type { VisionRequest, VisionResponse } from './vision-worker';
 import type { BodyTarget } from './vision';
 import { CAMERA, DARK, LIGHT, renderOverview, renderView, turnToTarget, type PlacedLabel, type SkyBody } from './render';
 import { bodyPath, moonPosition, sunPosition, terrainEvents } from './astro';
+import { buildNightSky, prepareSky, type NightSky, type PreparedSky, type SkyData } from './nightsky';
 import { searchPeaks } from './search';
 
 interface Preset {
@@ -82,8 +83,8 @@ let pano: PanoramaResult | null = null;
 let labels: PlacedLabel[] = [];
 let busy = false;
 let selected: Peak | null = null;
-/** Angetippte Sonne bzw. Mond (statt eines Gipfels). */
-let selectedBody: SkyBody['kind'] | null = null;
+/** Angetipptes Himmelsobjekt (statt eines Gipfels): 'sun', 'moon', 'planet:…', 'star:…'. */
+let selectedSky: string | null = null;
 /** Gesuchter Gipfel (Id, bleibt über Neuberechnungen erhalten). */
 let targetId: number | null = null;
 
@@ -168,7 +169,8 @@ function render() {
   updateNoise();
   const dpr = devicePixelRatio || 1;
   const overlay = cameraShown();
-  const palette = overlay ? CAMERA : darkScheme.matches ? DARK : LIGHT;
+  // Nachts dunkles Schema auch bei hellem System, sonst leuchten Labels auf dem Nachthimmel
+  const palette = overlay ? CAMERA : darkScheme.matches || (night?.fade ?? 0) > 0.5 ? DARK : LIGHT;
   viewCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   labels = renderView(viewCtx, cam, pano, {
     palette,
@@ -180,6 +182,7 @@ function render() {
     peakName,
     compass: compassLabels(8),
     sky,
+    night,
     // Skala und Labels unterhalb der Statuszeile beginnen
     topInset: statusEl.getBoundingClientRect().bottom - view.getBoundingClientRect().top,
     overlay,
@@ -485,14 +488,14 @@ function updateHover(e: PointerEvent) {
 
 /** Antippen eines Labels wählt den Gipfel, Antippen von Sonne/Mond den Himmelskörper (für Anpeilen/Zentrieren). */
 function selectAt(e: PointerEvent) {
-  const body = bodyAt(e);
-  if (body) {
-    selectedBody = body === selectedBody ? null : body;
+  const obj = skyObjectAt(e);
+  if (obj) {
+    selectedSky = obj === selectedSky ? null : obj;
     selected = null;
   } else {
     const hit = labelAt(e, 14);
     selected = hit && hit.peak.id !== selected?.id ? hit.peak : null;
-    selectedBody = null;
+    selectedSky = null;
   }
   updateAlignBar();
   requestRender();
@@ -501,9 +504,8 @@ function selectAt(e: PointerEvent) {
 /** Gewählter Gipfel oder Himmelskörper: Name, Richtung und Details. */
 function selection(): { name: string; az: number; angle: number; details: string } | null {
   if (selected) return { name: peakName(selected), az: selected.az, angle: selected.angle, details: peakDetails(selected) };
-  const b = sky.find((x) => x.kind === selectedBody);
-  if (!b) return null;
-  return { name: t(b.kind === 'sun' ? 'sky.sun' : 'sky.moon'), az: b.az, angle: b.alt, details: bodyDetails(b) };
+  const o = tappableSky().find((x) => x.key === selectedSky);
+  return o ? { name: o.name, az: o.az, angle: o.alt, details: o.details } : null;
 }
 
 function updateAlignBar() {
@@ -531,13 +533,13 @@ alignApply.addEventListener('click', () => {
     writeHash();
   }
   selected = null;
-  selectedBody = null;
+  selectedSky = null;
   updateAlignBar();
   requestRender();
 });
 $<HTMLButtonElement>('align-close').addEventListener('click', () => {
   selected = null;
-  selectedBody = null;
+  selectedSky = null;
   updateAlignBar();
   requestRender();
 });
@@ -553,7 +555,7 @@ function updateSky() {
   const lat = pano?.request.lat ?? Number(latIn.value);
   const lon = pano?.request.lon ?? Number(lonIn.value);
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-  const now = new Date();
+  const now = new Date(skyTime ?? Date.now());
   const start = new Date(now).setHours(0, 0, 0, 0);
   const end = start + 86_400_000;
   const sun = sunPosition(now, lat, lon);
@@ -568,11 +570,73 @@ function updateSky() {
     sun: terrainEvents(bodyPath(sunPosition, lat, lon, start, end, 2), horizonAt),
     moon: terrainEvents(bodyPath(moonPosition, lat, lon, start, end, 2), horizonAt),
   };
+  updateNight();
   showSkyInfo();
-  if (selectedBody) updateAlignBar();
-  requestRender();
 }
 window.setInterval(updateSky, 60_000);
+
+// --- Sterne, Sternbilder, Planeten ---------------------------------------------------
+
+/** Gewählter Zeitpunkt für den Himmel (null = jetzt). */
+let skyTime: number | null = null;
+let preparedSky: PreparedSky | null = null;
+let night: NightSky | null = null;
+
+fetch('./sky/sky.json')
+  .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+  .then((data: SkyData) => {
+    preparedSky = prepareSky(data);
+    updateNight();
+  })
+  .catch((err) => console.warn('Sterndaten:', err));
+
+/** Sterne wandern 0,25°/min: Lage alle 10 s neu (Sonne/Mond-Bahnen bleiben minütlich). */
+function updateNight() {
+  const sun = sky.find((b) => b.kind === 'sun');
+  const lat = pano?.request.lat ?? Number(latIn.value);
+  const lon = pano?.request.lon ?? Number(lonIn.value);
+  if (preparedSky && sun && Number.isFinite(lat) && Number.isFinite(lon)) {
+    const date = new Date(skyTime ?? Date.now());
+    // Sonnenhöhe zum selben Zeitpunkt (die Liste kann bis zu einer Minute alt sein)
+    night = buildNightSky(preparedSky, date, lat, lon, lang(), sunPosition(date, lat, lon).alt, (id) => t(`planet.${id}`));
+  }
+  if (selectedSky) updateAlignBar();
+  requestRender();
+}
+window.setInterval(() => {
+  if (night && night.fade > 0 && skyTime === null) updateNight();
+}, 10_000);
+
+/** Antippbare Himmelsobjekte über dem Gelände: Sonne, Mond, nachts Planeten und helle Sterne. */
+function tappableSky(): { key: string; name: string; az: number; alt: number; details: string }[] {
+  const out: { key: string; name: string; az: number; alt: number; details: string }[] = sky.map((b) => ({ key: b.kind, name: t(b.kind === 'sun' ? 'sky.sun' : 'sky.moon'), az: b.az, alt: b.alt, details: bodyDetails(b) }));
+  if (night && night.fade > 0) {
+    for (const o of night.objects) {
+      if (o.mag > night.magLimit + (o.kind === 'planet' ? 1.5 : 0)) continue;
+      out.push({ key: o.key, name: o.name, az: o.az, alt: o.alt, details: t('sky.objDetails', { alt: o.alt.toFixed(1), az: Math.round(o.az), mag: o.mag.toFixed(1) }) });
+    }
+  }
+  const p = pano;
+  return out.filter((o) => !p || o.alt >= p.horizon[Math.round(o.az / p.azStep) % p.horizon.length]);
+}
+
+const skyTimeIn = $<HTMLInputElement>('sky-time');
+/** Datum → Wert für datetime-local (Ortszeit). */
+function toLocalInput(t: number): string {
+  const d = new Date(t - new Date(t).getTimezoneOffset() * 60_000);
+  return d.toISOString().slice(0, 16);
+}
+skyTimeIn.value = toLocalInput(Date.now());
+skyTimeIn.addEventListener('change', () => {
+  const t = skyTimeIn.value ? new Date(skyTimeIn.value).getTime() : NaN;
+  skyTime = Number.isFinite(t) ? t : null;
+  updateSky();
+});
+$<HTMLButtonElement>('sky-now').addEventListener('click', () => {
+  skyTime = null;
+  skyTimeIn.value = toLocalInput(Date.now());
+  updateSky();
+});
 
 function fmtTime(t: number | null): string {
   return t === null ? '–' : new Date(t).toLocaleTimeString(lang(), { hour: '2-digit', minute: '2-digit' });
@@ -582,7 +646,9 @@ function showSkyInfo() {
   const moon = sky.find((b) => b.kind === 'moon');
   if (!skyEvents || !moon) return;
   skyInfo.hidden = false;
+  const day = skyTime === null ? t('sky.today') : new Date(skyTime).toLocaleDateString(lang(), { weekday: 'short', day: 'numeric', month: 'numeric' });
   skyInfo.textContent = t('sky.info', {
+    day,
     sunRise: fmtTime(skyEvents.sun.rise),
     sunSet: fmtTime(skyEvents.sun.set),
     moonRise: fmtTime(skyEvents.moon.rise),
@@ -599,20 +665,26 @@ function bodyDetails(b: SkyBody): string {
   );
 }
 
-/** Sonne/Mond unter dem Finger (Scheibe plus Toleranz), nur wenn über dem Gelände sichtbar. */
-function bodyAt(e: PointerEvent): SkyBody['kind'] | null {
+/** Himmelsobjekt unter dem Finger (nächstes innerhalb der Toleranz), Schlüssel oder null. */
+function skyObjectAt(e: PointerEvent): string | null {
   const rect = view.getBoundingClientRect();
   const x = e.clientX - rect.left;
   const y = e.clientY - rect.top;
   const proj = projector(cam);
-  const r = Math.max(7, (0.266 * cam.width) / cam.hfov) + 16;
-  for (const b of sky) {
-    const p = pano;
-    if (p && b.alt < p.horizon[Math.round(b.az / p.azStep) % p.horizon.length]) continue;
-    const q = proj(b.az, b.alt);
-    if (q && Math.hypot(q[0] - x, q[1] - y) <= r) return b.kind;
+  const disc = Math.max(7, (0.266 * cam.width) / cam.hfov);
+  let best: string | null = null;
+  let bestD = Infinity;
+  for (const o of tappableSky()) {
+    const q = proj(o.az, o.alt);
+    if (!q) continue;
+    const d = Math.hypot(q[0] - x, q[1] - y);
+    const tol = (o.key === 'sun' || o.key === 'moon' ? disc : 4) + 16;
+    if (d <= tol && d < bestD) {
+      best = o.key;
+      bestD = d;
+    }
   }
-  return null;
+  return best;
 }
 
 // --- Suche ------------------------------------------------------------------------
