@@ -5,7 +5,8 @@ name: Build peak dataset
 # holt fehlende und > 30 Tage alte Blöcke im Zeitbudget nach.
 on:
   schedule:
-    - cron: '17 3 * * *'
+    # alle 4 Stunden; ohne fällige Blöcke endet ein Lauf nach Sekunden ohne Veröffentlichung
+    - cron: '17 */4 * * *'
   workflow_dispatch:
   push:
     branches: [main]
