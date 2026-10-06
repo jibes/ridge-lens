@@ -123,6 +123,29 @@ export class OrientationTracker {
     return this.filtered;
   }
 
+  /** Verlauf der geglätteten Winkel (Zeit wie performance.now()), etwa 1 s. */
+  private history: (ViewAngles & { t: number })[] = [];
+
+  /**
+   * Blickwinkel zu einem früheren Zeitpunkt (linear interpoliert): für das Overlay über
+   * dem Kamerabild, das um die Kameralatenz hinterherhinkt.
+   */
+  anglesAt(t: number): ViewAngles | null {
+    const h = this.history;
+    if (!h.length || t >= h[h.length - 1].t) return this.filtered;
+    let i = h.length - 1;
+    while (i > 0 && h[i - 1].t > t) i--;
+    if (i === 0) return h[0];
+    const a = h[i - 1];
+    const b = h[i];
+    const k = (t - a.t) / Math.max(1e-6, b.t - a.t);
+    return {
+      heading: (((a.heading + k * deltaDeg(b.heading, a.heading)) % 360) + 360) % 360,
+      pitch: a.pitch + k * (b.pitch - a.pitch),
+      roll: a.roll + k * deltaDeg(b.roll, a.roll),
+    };
+  }
+
   /** Streuung der Rohwerte (Standardabweichung, Grad) der letzten 2 s je Achse. */
   get noise(): ViewAngles | null {
     return this.noiseMeter.std();
@@ -181,6 +204,8 @@ export class OrientationTracker {
     this.smoother.setHeadingSource(fused);
     this.noiseMeter.add(raw, t);
     this.filtered = this.smoother.update(raw, t);
+    this.history.push({ ...this.filtered, t });
+    while (this.history.length > 2 && this.history[0].t < t - 1000) this.history.shift();
     this.onChange();
   }
 }
@@ -235,7 +260,7 @@ export class OneEuro {
 
   constructor(
     public fcMin: number,
-    private beta: number,
+    public beta: number,
     private dCutoff = 1,
   ) {}
 
@@ -279,9 +304,15 @@ export class AngleSmoother {
     this.unwrapped = null;
   }
 
-  /** Kurs aus Gyro-Fusion ist ruhig → weniger träge glätten; reiner Kompass → stark. */
+  /**
+   * Gyro-Fusion ist ruhig → kaum glätten (Verzögerung ≈ 0,1 s, das Overlay soll dem
+   * Kamerabild folgen); reiner Kompass rauscht → stark glätten.
+   */
   setHeadingSource(fused: boolean): void {
-    this.heading.fcMin = fused ? 0.15 : 0.06;
+    this.heading.fcMin = fused ? 1.2 : 0.06;
+    this.pitch.fcMin = fused ? 1.5 : 0.15;
+    this.roll.fcMin = fused ? 1.5 : 0.1;
+    for (const f of [this.heading, this.pitch, this.roll]) f.beta = fused ? 0.05 : 0.01;
   }
 
   update(raw: ViewAngles, timeMs: number): ViewAngles {

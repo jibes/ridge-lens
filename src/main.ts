@@ -855,8 +855,31 @@ function showDeclination() {
 }
 
 /** Übernimmt Sensorwerte + Korrektur in die Kamera. */
+/**
+ * Verzögerung des Kamerabilds (Aufnahme → Anzeige, ms), gemessen per
+ * requestVideoFrameCallback; ohne captureTime typischer Wert für Android.
+ */
+let videoLatency = 100;
+type FrameMeta = { captureTime?: number; expectedDisplayTime: number };
+type RvfcVideo = HTMLVideoElement & { requestVideoFrameCallback?: (cb: (now: number, meta: FrameMeta) => void) => number };
+function watchVideoFrames() {
+  const v = videoEl as RvfcVideo;
+  if (!v.requestVideoFrameCallback) return;
+  const onFrame = (_now: number, meta: FrameMeta) => {
+    if (meta.captureTime !== undefined && meta.captureTime > 0) {
+      const l = meta.expectedDisplayTime - meta.captureTime;
+      if (l > 0 && l < 500) videoLatency += 0.1 * (l - videoLatency);
+    }
+    // Jedes neue Kamerabild mit passender Lage zeichnen
+    if (cameraShown()) requestRender();
+    v.requestVideoFrameCallback!(onFrame);
+  };
+  v.requestVideoFrameCallback(onFrame);
+}
+
 function syncSensor() {
-  const a = sensorOn ? tracker.angles : null;
+  // Über dem Kamerabild die Lage zum Aufnahmezeitpunkt, sonst laufen die Linien voraus
+  const a = !sensorOn ? null : cameraShown() ? tracker.anglesAt(performance.now() - videoLatency) : tracker.angles;
   if (!a) {
     cam.roll = 0;
     return;
@@ -994,6 +1017,7 @@ window.addEventListener('appinstalled', () => (installBtn.hidden = true));
 // --- Kamerabild ------------------------------------------------------------------
 
 const videoEl = $<HTMLVideoElement>('camera');
+watchVideoFrames();
 const cameraFeed = new CameraFeed(videoEl);
 const cameraBtn = $<HTMLButtonElement>('camera-toggle');
 const CAMERA_PREF_KEY = 'ridge-lens-camera';
