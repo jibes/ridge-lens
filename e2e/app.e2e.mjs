@@ -167,7 +167,25 @@ try {
   await page.check('#manual-cal');
   check(!(await page.isHidden('#manual-tools')), 'Manueller Modus zeigt die Werkzeuge');
   await page.uncheck('#manual-cal');
-  await page.click('#panel-close');
+  await page.evaluate(() => (document.getElementById('panel').scrollTop = 99999));
+  const closeBox = await page.locator('#panel-close').boundingBox();
+  const panelBox = await page.locator('#panel').boundingBox();
+  check(!!closeBox && !!panelBox && closeBox.y >= panelBox.y - 1 && closeBox.y < panelBox.y + 60, 'Schließkreuz bleibt beim Scrollen oben sichtbar');
+  await page.mouse.click(200, 150);
+  check(await page.isHidden('#panel'), 'Tippen außerhalb schließt die Einstellungen');
+  check(await page.isHidden('#align'), 'Tippen außerhalb wählt nichts aus');
+  await page.click('#menu');
+  const swiped = await page.evaluate(async () => {
+    const panel = document.getElementById('panel');
+    panel.scrollTop = 0;
+    const touch = (y) => new Touch({ identifier: 1, target: panel, clientX: 200, clientY: y });
+    panel.dispatchEvent(new TouchEvent('touchstart', { touches: [touch(400)], bubbles: true }));
+    for (const y of [430, 480, 530]) panel.dispatchEvent(new TouchEvent('touchmove', { touches: [touch(y)], bubbles: true }));
+    panel.dispatchEvent(new TouchEvent('touchend', { touches: [], bubbles: true }));
+    await new Promise((r) => setTimeout(r, 50));
+    return panel.hidden;
+  });
+  check(swiped, 'Herunterwischen schließt die Einstellungen');
 
   // 5. Kamera: läuft, und nach Hintergrund/Vordergrund wieder
   const videoTime = () => page.evaluate(() => document.querySelector('video')?.currentTime ?? 0);

@@ -432,6 +432,48 @@ function setPanel(open: boolean) {
 }
 menuBtn.addEventListener('click', () => setPanel(panel.hidden !== false));
 $<HTMLButtonElement>('panel-close').addEventListener('click', () => setPanel(false));
+// Tippen außerhalb schließt (und wird verschluckt, damit es nicht zugleich einen Gipfel wählt)
+document.addEventListener(
+  'pointerdown',
+  (e) => {
+    if (panel.hidden || panel.contains(e.target as Node) || menuBtn.contains(e.target as Node)) return;
+    e.stopPropagation();
+    e.preventDefault();
+    setPanel(false);
+  },
+  true,
+);
+// Herunterwischen schließt, wenn das Blatt ganz oben steht
+let swipe: { y: number; x: number; dy: number } | null = null;
+panel.addEventListener(
+  'touchstart',
+  (e) => {
+    swipe = panel.scrollTop <= 0 && e.touches.length === 1 ? { y: e.touches[0].clientY, x: e.touches[0].clientX, dy: 0 } : null;
+  },
+  { passive: true },
+);
+panel.addEventListener(
+  'touchmove',
+  (e) => {
+    if (!swipe) return;
+    const dy = e.touches[0].clientY - swipe.y;
+    const dx = Math.abs(e.touches[0].clientX - swipe.x);
+    if (dy <= 0 || dx > dy || panel.scrollTop > 0) {
+      swipe.dy = 0;
+      panel.style.transform = '';
+      return;
+    }
+    swipe.dy = dy;
+    panel.style.transform = `translateY(${dy}px)`;
+  },
+  { passive: true },
+);
+panel.addEventListener('touchend', () => {
+  const close = !!swipe && swipe.dy > 90;
+  swipe = null;
+  panel.style.transform = '';
+  if (close) setPanel(false);
+});
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     setPanel(false);

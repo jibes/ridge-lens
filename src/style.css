@@ -424,7 +424,26 @@ button.primary {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
+  /* Kopf mit Schließkreuz bleibt beim Scrollen oben stehen */
+  position: sticky;
+  top: -14px;
+  z-index: 2;
+  margin: -14px -18px 8px;
+  padding: 14px 18px 8px;
+  background: var(--surface-strong);
+  border-radius: 22px 22px 0 0;
+}
+/* Griff als Hinweis aufs Herunterwischen */
+.sheet-head::before {
+  content: '';
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  width: 36px;
+  height: 4px;
+  margin-left: -18px;
+  border-radius: 2px;
+  background: var(--border);
 }
 .sheet h2 {
   margin: 0;
