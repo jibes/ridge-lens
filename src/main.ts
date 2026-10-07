@@ -12,7 +12,7 @@ import type { VisionRequest, VisionResponse } from './vision-worker';
 import type { BodyTarget, MatchResult, StarRef } from './vision';
 import { CAMERA, DARK, LIGHT, renderOverview, renderView, turnToTarget, type PlacedLabel, type SkyBody } from './render';
 import { bodyPath, moonPosition, sunPosition, terrainEvents, type PathPoint } from './astro';
-import { buildNightSky, prepareSky, type NightSky, type PreparedSky, type SkyData } from './nightsky';
+import { buildNightSky, darkness, prepareSky, type NightSky, type PreparedSky, type SkyData } from './nightsky';
 import { fold, nameScore, scorePeaks } from './search';
 import { skylineRelief } from './panorama';
 
@@ -228,10 +228,9 @@ function render() {
   updateNoise();
   const dpr = devicePixelRatio || 1;
   const overlay = cameraShown();
-  // Nachts dunkles Schema auch bei hellem System, sonst leuchten Labels auf dem Nachthimmel
-  const palette = overlay ? CAMERA : darkScheme.matches || (night?.fade ?? 0) > 0.5 ? DARK : LIGHT;
-  // Nachts Bedienelemente und Overlay dämpfen (blendet nicht, Augen bleiben dunkeladaptiert)
-  document.body.classList.toggle('night-ui', (night?.fade ?? 0) > 0.5);
+  const theme = currentTheme();
+  if (document.documentElement.dataset.theme !== theme) document.documentElement.dataset.theme = theme;
+  const palette = overlay ? CAMERA : theme === 'light' ? LIGHT : DARK;
   viewCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   labels = renderView(viewCtx, cam, pano, {
     palette,
@@ -262,6 +261,34 @@ function render() {
 
 const darkScheme = matchMedia('(prefers-color-scheme: dark)');
 darkScheme.addEventListener('change', requestRender);
+
+/**
+ * Farbschema: hell, dunkel oder adaptiv nach der echten Sonnenhöhe am Standort – tags hell
+ * und kontrastreich, in der Dämmerung dunkel, nachts gedämpft rötlich (blendet nicht, die
+ * Augen bleiben für die Sterne dunkeladaptiert). Ohne Standort: Systemeinstellung.
+ */
+type ThemeMode = 'adaptive' | 'light' | 'dark';
+const THEME_KEY = 'ridge-lens-theme';
+const themeSel = $<HTMLSelectElement>('theme');
+let themeMode: ThemeMode = (loadString(THEME_KEY) as ThemeMode | null) ?? 'adaptive';
+if (!['adaptive', 'light', 'dark'].includes(themeMode)) themeMode = 'adaptive';
+themeSel.value = themeMode;
+themeSel.addEventListener('change', () => {
+  themeMode = themeSel.value as ThemeMode;
+  try {
+    localStorage.setItem(THEME_KEY, themeMode);
+  } catch {
+    /* kein Speicher */
+  }
+  requestRender();
+});
+let realSunAlt: number | null = null;
+function currentTheme(): 'light' | 'dark' | 'night' {
+  if (themeMode !== 'adaptive') return themeMode;
+  if (realSunAlt === null) return darkScheme.matches ? 'dark' : 'light';
+  if (realSunAlt > -3) return 'light';
+  return darkness(realSunAlt) > 0.5 ? 'night' : 'dark';
+}
 
 function resize() {
   const dpr = devicePixelRatio || 1;
@@ -709,6 +736,8 @@ function updateSky() {
   const lon = pano?.request.lon ?? Number(lonIn.value);
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
   const now = new Date(skyTime ?? Date.now());
+  // Für das Farbschema zählt die echte Uhrzeit, nicht die gewählte Himmelszeit
+  realSunAlt = sunPosition(new Date(), lat, lon).alt;
   const start = new Date(now).setHours(0, 0, 0, 0);
   const end = start + 86_400_000;
   const sun = sunPosition(now, lat, lon);
