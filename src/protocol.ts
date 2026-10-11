@@ -38,6 +38,8 @@ export interface Peak {
 export interface HazeHorizon {
   dist: number;
   horizon: Float32Array;
+  /** Entfernung (m) des Silhouettenpunkts je Richtung. */
+  range: Float32Array;
 }
 
 export interface PanoramaResult {
@@ -50,6 +52,8 @@ export interface PanoramaResult {
   /** Höhenwinkel der Silhouette je Azimut-Bin (NaN = noch nicht berechnet). */
   horizon: Float32Array;
   /** false: erst der Sektor um die Blickrichtung; die volle Silhouette folgt per 'horizon'-Nachricht. */
+  /** Entfernung (m) des Silhouettenpunkts je Richtung (NaN = noch nicht berechnet). */
+  horizonDist: Float32Array;
   /** Silhouette nur aus Gelände bis `dist` (m), für den Bildabgleich bei Dunst. */
   hazeHorizons: HazeHorizon[];
   complete: boolean;
@@ -78,5 +82,5 @@ export type WorkerMessage = { id: number } & (
   /** Nachgelieferte Gipfel einer weiteren Kachel. */
   | { type: 'peaks'; peaks: Peak[]; progress: PeakTileProgress; error: string | null }
   /** Volle 360°-Silhouette und Kammlinien nach dem ersten Sektor. */
-  | { type: 'horizon'; horizon: Float32Array; hazeHorizons: HazeHorizon[]; linePoints: Float32Array; lineOffsets: Uint32Array }
+  | { type: 'horizon'; horizon: Float32Array; horizonDist: Float32Array; hazeHorizons: HazeHorizon[]; linePoints: Float32Array; lineOffsets: Uint32Array }
 );

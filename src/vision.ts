@@ -209,6 +209,22 @@ export interface MatchResult {
 const CAP = 1.5;
 
 /**
+ * Abweichung Bild − Modell (Grad) mit Waldtoleranz: Das Höhenmodell kennt nur den Boden,
+ * Bäume heben die Bildkante über nahem Gelände um bis zu `tol` (≈ 25 m in Silhouetten-
+ * Entfernung). Darüber liegende Kanten zählen nur zu 30 %, bis `tol` aufgebraucht ist.
+ */
+export function treeError(above: number, tol: number): number {
+  return above > 0 ? above - Math.min(0.7 * above, tol) : -above;
+}
+
+/** Waldtoleranz je Richtung aus der Entfernung der Silhouette (Grad, höchstens 1,2°). */
+export function treeTolerance(dist: ArrayLike<number>, treeHeight = 25): Float32Array {
+  const out = new Float32Array(dist.length);
+  for (let i = 0; i < dist.length; i++) out[i] = dist[i] > 0 ? Math.min(1.2, (Math.atan(treeHeight / dist[i]) * 180) / Math.PI) : 0;
+  return out;
+}
+
+/**
  * Sucht Kurs-, Neigungs- und Bildwinkel-Korrektur, die die Bild-Horizontpunkte
  * (Bildschirmkoordinaten) bestmöglich auf den berechneten Horizont legt.
  */
@@ -218,6 +234,8 @@ export function matchSkyline(
   azStep: number,
   cam: Camera,
   totalColumns: number,
+  /** Waldtoleranz je Richtung (treeTolerance): nur für die Annahme, nicht für die Suche. */
+  tol?: ArrayLike<number>,
 ): MatchResult {
   const fail = (reason: MatchResult['reason'], cost = Infinity): MatchResult => ({ ok: false, dHeading: 0, dPitch: 0, fovScale: 1, cost, reason });
   if (points.length < totalColumns * 0.4) return fail('few-columns');
@@ -236,7 +254,7 @@ export function matchSkyline(
    * Robuste Restabweichung: Mittel der besten 70 % der Spalten (Wolkenkanten,
    * Bäume am Rand fallen heraus). `stride` > 1 nutzt nur jede n-te Spalte.
    */
-  const evaluate = (dh: number, dp: number, s: number, stride = 1) => {
+  const evaluate = (dh: number, dp: number, s: number, stride = 1, withTol = false) => {
     const { f, r, u } = cameraBasis({ heading: cam.heading + dh, pitch: cam.pitch + dp, roll: cam.roll });
     const F = cam.width / 2 / Math.tan(((cam.hfov * s) / 2) * RAD);
     let n = 0;
@@ -248,7 +266,8 @@ export function matchSkyline(
       const dz = f[2] + r[2] * xc + u[2] * yc;
       const az = Math.atan2(dx, dy) * DEG;
       const el = Math.atan2(dz, Math.hypot(dx, dy)) * DEG;
-      errs[n++] = Math.min(CAP, Math.abs(el - horizonAt(horizon, azStep, az)));
+      const d = el - horizonAt(horizon, azStep, az);
+      errs[n++] = Math.min(CAP, withTol && tol ? treeError(d, horizonAt(tol, azStep, az)) : Math.abs(d));
     }
     const e = errs.subarray(0, n).sort();
     const keep = Math.max(1, Math.round(n * 0.7));
@@ -295,7 +314,19 @@ export function matchSkyline(
   }
 
   // Gute Deckung liegt bei ≤ 0,1°; darüber passt Bild und Modell nicht sicher zusammen
-  if (fb.c > 0.15 || fb.inliers < 0.5) return fail('poor-fit', fb.c);
+  // Wald auf nahen Hügeln hebt die Bildkante. Gesucht wird ohne Toleranz (sonst würden
+  // falsche Lösungen ebenfalls billiger); danach die Neigung mit Toleranz nachführen –
+  // Waldkanten ziehen sie sonst nach unten – und damit über die Annahme entscheiden.
+  let fit = fb;
+  if (tol) {
+    let best = { dp: fb.dp, ...evaluate(fb.dh, fb.dp, fb.s, 1, true) };
+    for (let dp = fb.dp - 1.2; dp <= fb.dp + 0.3; dp += 0.025) {
+      const r = evaluate(fb.dh, dp, fb.s, 1, true);
+      if (r.c < best.c - 1e-6) best = { dp, ...r };
+    }
+    fit = { ...fb, dp: best.dp, c: best.c, inliers: best.inliers };
+  }
+  if (fit.c > 0.15 || fit.inliers < 0.5) return fail('poor-fit', fb.c);
   // Zweite, fast gleich gute Lösung mit deutlich anderem Kurs: mehrdeutig (gleichförmige Kette)
   const rival = refined.find((e) => Math.abs(e.dh - fb.dh) > 2);
   if (rival && rival.c < Math.max(fb.c * 1.6, fb.c + 0.1)) return fail('ambiguous', fb.c);
@@ -306,7 +337,7 @@ export function matchSkyline(
     for (const dp of [-0.3, -0.15, 0, 0.15, 0.3]) c = Math.min(c, evaluate(fb.dh + side, fb.dp + dp, fb.s).c);
     if (c < Math.max(fb.c + 0.15, fb.c * 2.5)) return fail('ambiguous', fb.c);
   }
-  return { ok: true, dHeading: fb.dh, dPitch: fb.dp, fovScale: fb.s, cost: fb.c };
+  return { ok: true, dHeading: fb.dh, dPitch: fit.dp, fovScale: fb.s, cost: fit.c };
 }
 
 /** Sonne bzw. Mond mit berechneter scheinbarer Lage. */
@@ -426,8 +457,9 @@ export function matchSkylineHaze(
   azStep: number,
   cam: Camera,
   totalColumns: number,
+  tols?: ArrayLike<number>[],
 ): MatchResult & { band: number } {
-  const all = horizons.map((h, band) => ({ ...matchSkyline(points, h, azStep, cam, totalColumns), band }));
+  const all = horizons.map((h, band) => ({ ...matchSkyline(points, h, azStep, cam, totalColumns, tols?.[band]), band }));
   const ok = all.filter((m) => m.ok).sort((a, b) => a.cost - b.cost);
   if (!ok.length) return all[0];
   const [best, ...rest] = ok;

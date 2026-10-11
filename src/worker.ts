@@ -103,8 +103,10 @@ async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?
 
   const nBins = Math.round(360 / AZ_STEP);
   const horizon = new Float32Array(nBins).fill(NaN);
+  /** Entfernung (m) des Silhouettenpunkts je Richtung (Bildabgleich: Toleranz für Wald). */
+  const horizonDist = new Float32Array(nBins).fill(NaN);
   // Silhouette nur bis zu einer Entfernung: ferne Gipfel verschwinden im Dunst
-  const hazeHorizons = HAZE_DISTS.map((dist) => ({ dist, horizon: new Float32Array(nBins).fill(NaN) }));
+  const hazeHorizons = HAZE_DISTS.map((dist) => ({ dist, horizon: new Float32Array(nBins).fill(NaN), range: new Float32Array(nBins).fill(NaN) }));
   const bins: RidgePoint[][] = Array.from({ length: nBins }, () => []);
   const ray = { dists: [] as number[], angles: [] as number[] };
   let doneRays = 0;
@@ -116,10 +118,20 @@ async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?
       const { ridges, horizon: hz } = extractRidges(ray.dists, ray.angles);
       bins[i] = ridges;
       horizon[i] = hz;
+      let at = 0;
+      for (let k = 0; k < ray.angles.length; k++) if (ray.angles[k] >= ray.angles[at]) at = k;
+      horizonDist[i] = ray.dists[at] ?? NaN;
       for (const band of hazeHorizons) {
         let max = -90;
-        for (let k = 0; k < ray.dists.length && ray.dists[k] <= band.dist; k++) max = Math.max(max, ray.angles[k]);
+        let d = NaN;
+        for (let k = 0; k < ray.dists.length && ray.dists[k] <= band.dist; k++) {
+          if (ray.angles[k] >= max) {
+            max = ray.angles[k];
+            d = ray.dists[k];
+          }
+        }
         band.horizon[i] = max;
+        band.range[i] = d;
       }
     }
   };
@@ -165,7 +177,8 @@ async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?
     h0,
     azStep: AZ_STEP,
     horizon: horizon.slice(),
-    hazeHorizons: hazeHorizons.map((b) => ({ dist: b.dist, horizon: b.horizon.slice() })),
+    horizonDist: horizonDist.slice(),
+    hazeHorizons: hazeHorizons.map((b) => ({ dist: b.dist, horizon: b.horizon.slice(), range: b.range.slice() })),
     complete: false,
     linePoints: lines.points,
     lineOffsets: lines.offsets,
@@ -183,10 +196,12 @@ async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?
   castBins((az) => !inSector(az));
   const all = link();
   const full = horizon.slice();
-  const haze = hazeHorizons.map((b) => ({ dist: b.dist, horizon: b.horizon.slice() }));
-  post({ id, type: 'horizon', horizon: full, hazeHorizons: haze, linePoints: all.points, lineOffsets: all.offsets }, [
+  const haze = hazeHorizons.map((b) => ({ dist: b.dist, horizon: b.horizon.slice(), range: b.range.slice() }));
+  const fullDist = horizonDist.slice();
+  post({ id, type: 'horizon', horizon: full, horizonDist: fullDist, hazeHorizons: haze, linePoints: all.points, lineOffsets: all.offsets }, [
     full.buffer,
-    ...haze.map((b) => b.horizon.buffer),
+    fullDist.buffer,
+    ...haze.flatMap((b) => [b.horizon.buffer, b.range.buffer]),
     all.points.buffer,
     all.offsets.buffer,
   ]);

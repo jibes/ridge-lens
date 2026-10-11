@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { project, type Camera } from './projection';
-import { SkylineAccumulator, detectBody, detectStars, matchStars, type StarRef, extractSkyline, matchPitch, matchSkyline, matchSkylineHaze, screenToDir, searchWindows, type BodyTarget } from './vision';
+import { SkylineAccumulator, treeTolerance, detectBody, detectStars, matchStars, type StarRef, extractSkyline, matchPitch, matchSkyline, matchSkylineHaze, screenToDir, searchWindows, type BodyTarget } from './vision';
 
 const AZ_STEP = 0.1;
 const W = 390;
@@ -475,5 +475,41 @@ describe('stars at night', () => {
       const m = matchStars(blobs, catalog);
       expect(m.ok).toBe(false);
     }
+  });
+});
+
+describe('forest on near hills', () => {
+  // Modell: nackter Boden; Bild: Wald hebt die Kante über gut der Hälfte des Bilds um 0,6–1,1°
+  const ground = mountainHorizon();
+  const forest = ground.map((v, i) => {
+    const az = i * AZ_STEP;
+    return az > 196 && az < 214 ? v + 1.5 * (0.55 + 0.15 * Math.sin(az * 3)) : v;
+  });
+  const tol = treeTolerance(new Float32Array(3600).fill(1500));
+
+  function points(sensor: Camera) {
+    const img = renderImage(truth, forest, { noSnow: true });
+    const sky = extractSkyline(img, COLS, ROWS, searchWindows(sensor, ground, AZ_STEP, COLS, ROWS));
+    const out: { x: number; y: number }[] = [];
+    for (let c = 0; c < COLS; c++) if (!Number.isNaN(sky.y[c])) out.push({ x: ((c + 0.5) * W) / COLS, y: (sky.y[c] * H) / ROWS });
+    return out;
+  }
+
+  it('tolerance at 1.5 km is about one degree', () => {
+    expect(tol[0]).toBeCloseTo(0.95, 1);
+  });
+
+  it('accepts with clear margin, heading exact, pitch pulled less by the canopy', () => {
+    const sensor: Camera = { ...truth, heading: truth.heading - 3, pitch: truth.pitch + 0.6 };
+    const pts = points(sensor);
+    const withTol = matchSkyline(pts, ground, AZ_STEP, sensor, COLS, tol);
+    const plain = matchSkyline(pts, ground, AZ_STEP, sensor, COLS);
+    expect(withTol.ok).toBe(true);
+    expect(Math.abs(sensor.heading + withTol.dHeading - truth.heading)).toBeLessThan(0.3);
+    // ohne Toleranz knapp an der Annahmegrenze (0,15°), mit deutlich darunter
+    expect(withTol.cost).toBeLessThan(0.1);
+    expect(plain.cost).toBeGreaterThan(withTol.cost * 1.5);
+    const err = (m: typeof plain) => Math.abs(sensor.pitch + m.dPitch - truth.pitch);
+    expect(err(withTol)).toBeLessThanOrEqual(err(plain) + 1e-9);
   });
 });

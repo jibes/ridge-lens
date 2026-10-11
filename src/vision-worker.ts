@@ -1,10 +1,10 @@
 /// <reference lib="webworker" />
 // Bildabgleich im Hintergrund, damit die Anzeige flüssig bleibt.
 import type { Camera } from './projection';
-import { SkylineAccumulator, detectBody, detectStars, matchStars, type StarRef, extractSkyline, matchPitch, matchSkylineHaze, searchWindows, type BodyTarget, type MatchResult } from './vision';
+import { SkylineAccumulator, treeTolerance, detectBody, detectStars, matchStars, type StarRef, extractSkyline, matchPitch, matchSkylineHaze, searchWindows, type BodyTarget, type MatchResult } from './vision';
 
 export type VisionRequest =
-  | { type: 'horizon'; horizon: Float32Array; haze: Float32Array[]; azStep: number }
+  | { type: 'horizon'; horizon: Float32Array; haze: Float32Array[]; azStep: number; dist: Float32Array; hazeDist: Float32Array[] }
   | {
       type: 'frame';
       id: number;
@@ -33,6 +33,8 @@ export interface VisionResponse {
 declare const self: DedicatedWorkerGlobalScope;
 let horizon: Float32Array | null = null;
 let haze: Float32Array[] = [];
+/** Waldtoleranz je Modell (volle Silhouette, dann Dunst-Silhouetten). */
+let tols: Float32Array[] = [];
 let azStep = 0.1;
 const acc = new SkylineAccumulator();
 
@@ -41,6 +43,7 @@ self.onmessage = (ev: MessageEvent<VisionRequest>) => {
   if (msg.type === 'horizon') {
     horizon = msg.horizon;
     haze = msg.haze;
+    tols = [treeTolerance(msg.dist), ...msg.hazeDist.map((d) => treeTolerance(d))];
     azStep = msg.azStep;
     acc.clear();
     return;
@@ -64,7 +67,7 @@ self.onmessage = (ev: MessageEvent<VisionRequest>) => {
     self.postMessage({ id: msg.id, cam, match: none, source: 'skyline' } satisfies VisionResponse);
     return;
   }
-  const match = matchSkylineHaze(points, [horizon, ...haze], azStep, cam, cols);
+  const match = matchSkylineHaze(points, [horizon, ...haze], azStep, cam, cols, tols);
   if (!match.ok && msg.stars) {
     // Nachts: Sternmuster
     const st = msg.stars;

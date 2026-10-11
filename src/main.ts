@@ -365,6 +365,7 @@ worker.onmessage = (ev: MessageEvent<WorkerMessage>) => {
     // Volle Silhouette nach dem ersten Sektor
     if (!pano) return;
     pano.horizon = msg.horizon;
+    pano.horizonDist = msg.horizonDist;
     pano.hazeHorizons = msg.hazeHorizons;
     pano.linePoints = msg.linePoints;
     pano.lineOffsets = msg.lineOffsets;
@@ -1736,6 +1737,8 @@ function visionTick() {
       horizon: pano.horizon.slice(),
       haze: pano.hazeHorizons.map((b) => b.horizon.slice()),
       azStep: pano.azStep,
+      dist: pano.horizonDist.slice(),
+      hazeDist: pano.hazeHorizons.map((b) => b.range.slice()),
     } satisfies VisionRequest);
   }
   const { w: vw, h: vh } = cameraFeed.size;
