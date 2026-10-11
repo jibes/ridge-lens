@@ -2,11 +2,12 @@ import { deltaDeg, normalizeDeg } from './geo';
 import { OrientationTracker } from './orientation';
 import { decimalYear, declination as magneticDeclination } from './magnetic';
 import { prefetchArea } from './offline';
+import { SensorProfile, orientationOf, pitchBand } from './profile';
 import type { SatInfo, SatPass } from './sats';
 import { dayTrack } from './tracks';
 import { azimuthInView, projector, type Camera } from './projection';
 import type { ComputeRequest, PanoramaResult, Peak, WorkerMessage } from './protocol';
-import { applyDom, compassLabels, detectLang, lang, setLang, storedLangChoice, storeLangChoice, t, type Lang } from './i18n';
+import { applyDom, compassLabels, detectLang, lang, setLang, storedLangChoice, storeLangChoice, t, type Key, type Lang } from './i18n';
 import { CameraFeed, DEFAULT_CAMERA_FOV, displayHfov, fitTilt, fovLongFromDisplay, type TiltSample } from './camera';
 import type { VisionRequest, VisionResponse } from './vision-worker';
 import type { BodyTarget, MatchResult, StarRef } from './vision';
@@ -153,7 +154,7 @@ function loadOffset(): { heading: number; pitch: number } {
 }
 
 /** Woher eine Korrektur kam (für das Protokoll in den Sensordetails). */
-type OffsetSource = 'drag' | 'apply' | 'legacy' | 'reset' | 'fov' | VisionResponse['source'];
+type OffsetSource = 'drag' | 'apply' | 'legacy' | 'reset' | 'fov' | 'profile' | VisionResponse['source'];
 const corrLog: { t: number; src: OffsetSource; dh: number; dp: number; h: number; p: number }[] = [];
 let loggedOffset = { heading: totalHeadingOffset(), pitch: totalPitchOffset() };
 
@@ -1275,7 +1276,10 @@ function showDeclination() {
  * Verzögerung des Kamerabilds (Aufnahme → Anzeige, ms), gemessen per
  * requestVideoFrameCallback; ohne captureTime typischer Wert für Android.
  */
-let videoLatency = 100;
+const LATENCY_KEY = 'ridge-lens-video-latency';
+/** Gemessene Kameraverzögerung bleibt gespeichert (je Gerät ziemlich konstant). */
+let videoLatency = Number(loadString(LATENCY_KEY)) || 100;
+let latencySavedAt = 0;
 type FrameMeta = { captureTime?: number; expectedDisplayTime: number };
 type RvfcVideo = HTMLVideoElement & { requestVideoFrameCallback?: (cb: (now: number, meta: FrameMeta) => void) => number };
 function watchVideoFrames() {
@@ -1284,13 +1288,63 @@ function watchVideoFrames() {
   const onFrame = (_now: number, meta: FrameMeta) => {
     if (meta.captureTime !== undefined && meta.captureTime > 0) {
       const l = meta.expectedDisplayTime - meta.captureTime;
-      if (l > 0 && l < 500) videoLatency += 0.1 * (l - videoLatency);
+      if (l > 0 && l < 500) {
+        videoLatency += 0.1 * (l - videoLatency);
+        if (performance.now() - latencySavedAt > 30_000) {
+          latencySavedAt = performance.now();
+          try {
+            localStorage.setItem(LATENCY_KEY, videoLatency.toFixed(0));
+          } catch {
+            /* kein Speicher */
+          }
+        }
+      }
     }
     // Jedes neue Kamerabild mit passender Lage zeichnen
     if (cameraShown()) requestRender();
     v.requestVideoFrameCallback!(onFrame);
   };
   v.requestVideoFrameCallback(onFrame);
+}
+
+// --- Lernendes Sensorprofil ---------------------------------------------------------
+
+const PROFILE_KEY = 'ridge-lens-sensor-profile';
+const FOV_COUNT_KEY = 'ridge-lens-camera-fov-n';
+const profile = new SensorProfile((() => {
+  try {
+    return JSON.parse(localStorage.getItem(PROFILE_KEY) ?? '{}');
+  } catch {
+    return {};
+  }
+})());
+function saveProfile() {
+  try {
+    localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+  } catch {
+    /* kein Speicher */
+  }
+}
+/** Aktuelle Haltung (Bildschirmdrehung | Neigungsstufe) und die beim letzten Versand ans Bild. */
+let posture = '';
+let postureAtSend = '';
+function learn(key: string, heading: number | null, pitch: number | null, weight: number) {
+  if (!key) return;
+  profile.update(key, heading, pitch, weight, Date.now());
+  saveProfile();
+}
+/** Haltung wechselt: ohne frischen Bildtreffer gilt der gelernte Wert der neuen Haltung. */
+function applyPosture(devicePitch: number) {
+  const angle = screen.orientation?.angle ?? (window as unknown as { orientation?: number }).orientation ?? 0;
+  const key = `${orientationOf(angle)}|${pitchBand(devicePitch, posture.split('|')[1])}`;
+  if (key === posture) return;
+  posture = key;
+  if (performance.now() - lastMatchAt < 30_000) return;
+  const learned = profile.get(key, Date.now());
+  if (!learned) return;
+  if (learned.heading !== null) offset.heading = learned.heading;
+  if (learned.pitch !== null) offset.pitch = Math.max(-20, Math.min(20, learned.pitch));
+  saveOffset('profile');
 }
 
 function syncSensor() {
@@ -1300,6 +1354,7 @@ function syncSensor() {
     cam.roll = 0;
     return;
   }
+  applyPosture(a.pitch);
   cam.heading = normalizeDeg(trueHeading(a.heading) + totalHeadingOffset());
   cam.pitch = a.pitch + totalPitchOffset();
   cam.roll = a.roll;
@@ -1340,6 +1395,7 @@ const SOURCE_KEYS = {
   apply: 'log.apply',
   legacy: 'log.legacy',
   reset: 'log.reset',
+  profile: 'log.profile',
 } as const;
 function showCorrLog() {
   const head = t('log.title', { h: fmtSigned(totalHeadingOffset()), p: fmtSigned(totalPitchOffset()) });
@@ -1348,7 +1404,21 @@ function showCorrLog() {
     .slice()
     .reverse()
     .map((e) => `${time(e.t)} ${t(SOURCE_KEYS[e.src])}: ${t('log.delta', { dh: fmtSigned(e.dh), dp: fmtSigned(e.dp) })}`);
-  corrLogEl.textContent = [head, ...lines].join('\n');
+  const posName = (k: string) => {
+    const [o, band] = k.split('|');
+    return `${t(`posture.${o}` as Key)} · ${t(`posture.${band}` as Key)}`;
+  };
+  const learned = profile
+    .entries(Date.now())
+    .map(
+      (e) =>
+        `${posName(e.key)}: ` +
+        [e.heading !== null ? t('profile.heading', { h: fmtSigned(e.heading) }) : '', e.pitch !== null ? t('profile.pitch', { p: fmtSigned(e.pitch) }) : '']
+          .filter(Boolean)
+          .join(', ') +
+        ` (${t('profile.matches', { n: Math.round(e.n) })})`,
+    );
+  corrLogEl.textContent = [head, ...lines, ...(learned.length ? ['', t('profile.title'), ...learned] : [])].join('\n');
 }
 
 /** Sensormodus ist an, sobald Orientierungsdaten kommen; vorher und ohne Sensor: manuell. */
@@ -1374,6 +1444,8 @@ function startSensors() {
 $<HTMLButtonElement>('offset-reset').addEventListener('click', () => {
   offset.heading = 0;
   offset.pitch = 0;
+  profile.clear();
+  saveProfile();
   Object.assign(manualAdj, { heading: 0, pitch: 0, fov: 1 });
   saveOffset('reset');
   requestRender();
@@ -1630,6 +1702,11 @@ cameraSelect.addEventListener('change', async () => {
   // Andere Kamera, anderer Bildwinkel: Kalibrierung neu beginnen
   cameraFov = DEFAULT_CAMERA_FOV;
   saveCameraFov();
+  try {
+    localStorage.removeItem(FOV_COUNT_KEY);
+  } catch {
+    /* kein Speicher */
+  }
   manualAdj.fov = 1;
   saveManualAdj();
   if (cameraWanted) {
@@ -1756,6 +1833,7 @@ function visionTick() {
   lastVisionSent = now;
   offsetPitchAtSend = totalPitchOffset();
   offsetHeadingAtSend = totalHeadingOffset();
+  postureAtSend = posture;
   visionWorker.postMessage(
     {
       type: 'frame',
@@ -1837,10 +1915,19 @@ function calibrateFromTilt(match: MatchResult, snap: Camera): boolean {
   if (!fit) return false;
   const { w, h } = cameraFeed.size;
   const hfov = (2 * Math.atan(Math.tan((snap.hfov / 2) * (Math.PI / 180)) * fit.scale) * 180) / Math.PI;
-  cameraFov = Math.min(120, Math.max(30, fovLongFromDisplay(hfov, w, h, snap.width, snap.height) / manualAdj.fov));
+  // Mittel über die bisherigen Kalibrierungen (höchstens 10), statt nur der letzten
+  const measured = Math.min(120, Math.max(30, fovLongFromDisplay(hfov, w, h, snap.width, snap.height) / manualAdj.fov));
+  const n = Math.min(9, Number(loadString(FOV_COUNT_KEY)) || 0);
+  cameraFov = (cameraFov * n + measured) / (n + 1);
   saveCameraFov();
+  try {
+    localStorage.setItem(FOV_COUNT_KEY, String(n + 1));
+  } catch {
+    /* kein Speicher */
+  }
   offset.pitch = Math.max(-20, Math.min(20, fit.pitch - manualAdj.pitch));
   saveOffset('fov');
+  learn(postureAtSend, null, offset.pitch, 1);
   tiltSamples = [];
   return true;
 }
@@ -1864,6 +1951,14 @@ visionWorker.onmessage = (ev: MessageEvent<VisionResponse>) => {
   offset.heading = deltaDeg(offset.heading + VISION_GAIN * match.dHeading, 0);
   offset.pitch = Math.max(-20, Math.min(20, offset.pitch + VISION_GAIN * match.dPitch));
   saveOffset(source);
+  // Ins Sensorprofil: die volle gemessene Korrektur (ohne manuellen Anteil) für die Haltung beim Aufnehmen
+  const weight = { skyline: 1, stars: 1, pano: 0.7, sun: 0.6, moon: 0.6, pitch: 0.5 }[source];
+  learn(
+    postureAtSend,
+    source === 'pitch' ? null : deltaDeg(offsetHeadingAtSend + match.dHeading - manualAdj.heading, 0),
+    offsetPitchAtSend + match.dPitch - manualAdj.pitch,
+    weight,
+  );
   if (source === 'skyline') {
     const { w, h } = cameraFeed.size;
     const hfov = snap.hfov * (1 + VISION_GAIN * (match.fovScale - 1));

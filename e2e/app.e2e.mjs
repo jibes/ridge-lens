@@ -207,6 +207,33 @@ try {
   await page.waitForTimeout(800);
   check((await videoTime()) > t1, 'Kamerabild läuft nach Rückkehr in den Vordergrund weiter');
 
+  // 6. Lernendes Sensorprofil: gelernter Kurs der Haltung wird ohne Bildtreffer angewandt
+  const p2 = await ctx.newPage();
+  await p2.addInitScript(() => {
+    if (sessionStorage.getItem('seeded')) return;
+    sessionStorage.setItem('seeded', '1');
+    const s = Math.sin((5 * Math.PI) / 180) * 4;
+    const c = Math.cos((5 * Math.PI) / 180) * 4;
+    localStorage.setItem('ridge-lens-offset', JSON.stringify({ heading: 0, pitch: 0, v: 2 }));
+    localStorage.setItem('ridge-lens-sensor-profile', JSON.stringify({ 'p|level': { hs: s, hc: c, hw: 4, ps: 0, pw: 0, t: Date.now() } }));
+  });
+  await p2.goto(BASE);
+  await p2.waitForTimeout(1500);
+  await p2.evaluate(async () => {
+    for (let i = 0; i < 10; i++) {
+      for (const type of ['deviceorientationabsolute', 'deviceorientation']) {
+        const ev = new Event(type);
+        Object.assign(ev, { alpha: 0, beta: 90, gamma: 0, absolute: type === 'deviceorientationabsolute' });
+        window.dispatchEvent(ev);
+      }
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  });
+  const learned = await p2.evaluate(() => JSON.parse(localStorage.getItem('ridge-lens-offset') ?? '{}').heading);
+  check(Math.abs(learned - 5) < 0.01, `Gelernter Kurs der Haltung angewandt (${learned})`);
+  await p2.close();
+
   check(errors.length === 0, `keine Skriptfehler${errors.length ? `: ${errors.join(' | ')}` : ''}`);
 } finally {
   await browser.close();
