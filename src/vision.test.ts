@@ -235,6 +235,22 @@ describe('flat ridge with one rise (structure in a minority of columns)', () => 
   });
 });
 
+describe('wrong stored correction (22° beyond the search range)', () => {
+  it('finds the solution near the raw compass when searching there too', () => {
+    const horizon = mountainHorizon();
+    const sensor: Camera = { ...truth, heading: truth.heading + 22.5 };
+    const img = renderImage(truth, horizon);
+    const windows = searchWindows(sensor, horizon, AZ_STEP, COLS, ROWS, 20 + 22.5);
+    const sky = extractSkyline(img, COLS, ROWS, windows);
+    const points: { x: number; y: number }[] = [];
+    for (let c = 0; c < COLS; c++) if (!Number.isNaN(sky.y[c])) points.push({ x: ((c + 0.5) * W) / COLS, y: (sky.y[c] * H) / ROWS });
+    expect(matchSkyline(points, horizon, AZ_STEP, sensor, COLS).ok).toBe(false);
+    const m = matchSkyline(points, horizon, AZ_STEP, sensor, COLS, undefined, [0, -22.5]);
+    expect(m.ok).toBe(true);
+    expect(Math.abs(sensor.heading + m.dHeading - truth.heading)).toBeLessThan(0.3);
+  });
+});
+
 describe('sun and moon as reference', () => {
   const horizon = mountainHorizon();
   const sun: BodyTarget = { kind: 'sun', az: 207, alt: 9 };

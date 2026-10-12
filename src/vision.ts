@@ -326,6 +326,11 @@ export function matchSkyline(
   totalColumns: number,
   /** Waldtoleranz je Richtung (treeTolerance): nur für die Annahme, nicht für die Suche. */
   tol?: ArrayLike<number>,
+  /**
+   * Kursversätze, um die je ±20° gesucht wird. Neben 0 (aktuelle Ausrichtung) der rohe
+   * Kompass: ist eine gespeicherte Korrektur falsch, liegt die Lösung sonst außerhalb.
+   */
+  centers: number[] = [0],
 ): MatchResult {
   const fail = (reason: MatchResult['reason'], cost = Infinity): MatchResult => ({ ok: false, dHeading: 0, dPitch: 0, fovScale: 1, cost, reason });
   if (points.length < totalColumns * 0.4) return fail('few-columns');
@@ -372,8 +377,13 @@ export function matchSkyline(
   const coarse: { dh: number; dp: number; s: number; c: number }[] = [];
   for (const s of [0.88, 0.94, 1, 1.06, 1.12]) {
     // ±20°: an Stahl (Steg, Brücke) liegt der Kompass auch 15–20° daneben
-    for (let dh = -20; dh <= 20; dh += 1) {
-      for (let dp = -4; dp <= 4; dp += 0.5) coarse.push({ dh, dp, s, c: evaluate(dh, dp, s, 2).c });
+    const seen = new Set<number>();
+    for (const c0 of centers) {
+      for (let dh = Math.round(c0) - 20; dh <= Math.round(c0) + 20; dh += 1) {
+        if (seen.has(dh)) continue;
+        seen.add(dh);
+        for (let dp = -4; dp <= 4; dp += 0.5) coarse.push({ dh, dp, s, c: evaluate(dh, dp, s, 2).c });
+      }
     }
   }
   coarse.sort((a, b) => a.c - b.c);
@@ -391,7 +401,7 @@ export function matchSkyline(
         improved = false;
         for (const [a, b, c] of [[hStep, 0, 0], [-hStep, 0, 0], [0, pStep, 0], [0, -pStep, 0], [0, 0, sStep], [0, 0, -sStep]]) {
           const cand = { dh: local.dh + a, dp: local.dp + b, s: local.s + c };
-          if (Math.abs(cand.dh) > 21 || Math.abs(cand.dp) > 5 || cand.s < 0.84 || cand.s > 1.16) continue;
+          if (centers.every((c0) => Math.abs(cand.dh - c0) > 21) || Math.abs(cand.dp) > 5 || cand.s < 0.84 || cand.s > 1.16) continue;
           const r = evaluate(cand.dh, cand.dp, cand.s);
           if (r.c < local.c - 1e-6) {
             local = { ...cand, ...r };
@@ -552,8 +562,9 @@ export function matchSkylineHaze(
   cam: Camera,
   totalColumns: number,
   tols?: ArrayLike<number>[],
+  centers?: number[],
 ): MatchResult & { band: number; bands: MatchResult[] } {
-  const all = horizons.map((h, band) => ({ ...matchSkyline(points, h, azStep, cam, totalColumns, tols?.[band]), band }));
+  const all = horizons.map((h, band) => ({ ...matchSkyline(points, h, azStep, cam, totalColumns, tols?.[band], centers), band }));
   const ok = all.filter((m) => m.ok).sort((a, b) => a.cost - b.cost);
   if (!ok.length) return { ...all[0], bands: all };
   const [best, ...rest] = ok;

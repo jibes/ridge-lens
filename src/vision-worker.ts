@@ -89,7 +89,9 @@ self.onmessage = (ev: MessageEvent<VisionRequest>) => {
   }
   if (!horizon) return;
   const { pixels, cols, rows, cam } = msg;
-  const windows = searchWindows(cam, horizon, azStep, cols, rows);
+  // Auch um den rohen Kompass suchen (eine falsch gelernte Korrektur nicht festschreiben)
+  const centers = Math.abs(msg.offHeading) > 3 ? [0, -msg.offHeading] : [0];
+  const windows = searchWindows(cam, horizon, azStep, cols, rows, 20 + (centers.length > 1 ? Math.abs(msg.offHeading) : 0));
   let sky = null;
   let segMs: number | undefined;
   let mask: { size: number; prob: Float32Array } | null = null;
@@ -141,7 +143,7 @@ self.onmessage = (ev: MessageEvent<VisionRequest>) => {
     reply(none, 'skyline');
     return;
   }
-  const match = matchSkylineHaze(points, [horizon, ...haze], azStep, cam, cols, tols);
+  const match = matchSkylineHaze(points, [horizon, ...haze], azStep, cam, cols, tols, centers);
   step(`Silhouette ${fmt(match)}${match.ok ? ` Dunst ${match.band}` : ''}`);
   // je Modell-Silhouette: voll, nur Gelände bis 15 km, bis 35 km (zeigt, warum „ambiguous“)
   match.bands.forEach((m, i) => step(`  ${['voll', '15 km', '35 km'][i] ?? i} ${fmt(m)}`));

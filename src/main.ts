@@ -1399,8 +1399,14 @@ window.setInterval(() => {
   }
 }, 10_000);
 
+/**
+ * Kursfehler über 15° sind örtliche Störungen (Stahl, Magnet), keine Eigenschaft des Geräts:
+ * nicht lernen und nicht anwenden – sonst trägt das Profil den Fehler eines Stegs überallhin.
+ */
+const PROFILE_MAX_HEADING = 15;
 function learn(key: string, heading: number | null, pitch: number | null, weight: number) {
   if (!key) return;
+  if (heading !== null && Math.abs(heading) > PROFILE_MAX_HEADING) heading = null;
   // Weicht ein Treffer stark vom Gelernten ab, ist es meist eine örtliche Störung (Stahl,
   // Auto, Magnet): nur schwach einfließen lassen
   const known = profile.get(key, Date.now());
@@ -1417,7 +1423,7 @@ function applyPosture(devicePitch: number) {
   if (performance.now() - lastMatchAt < 30_000) return;
   const learned = profile.get(key, Date.now());
   if (!learned) return;
-  if (learned.heading !== null) offset.heading = learned.heading;
+  if (learned.heading !== null && Math.abs(learned.heading) <= PROFILE_MAX_HEADING) offset.heading = learned.heading;
   if (learned.pitch !== null) offset.pitch = Math.max(-20, Math.min(20, learned.pitch));
   saveOffset('profile');
 }
