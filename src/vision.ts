@@ -207,14 +207,18 @@ export function extractSkylineSeg(
   windows: [number, number][],
   prob: Float32Array,
   size: number,
+  /** Bildzeilen, die die Maske abdeckt (Streifen um den Horizont); außerhalb unbekannt. */
+  band: [number, number] = [0, h],
 ): Skyline {
   const y = new Float32Array(w).fill(NaN);
   const conf = new Float32Array(w);
   const blueSky = new Uint8Array(w);
   const sx = size / w;
-  const sy = size / h;
+  const sy = size / (band[1] - band[0]);
   const at = (c: number, r: number) => {
-    const fy = Math.max(0, Math.min(size - 1, (r + 0.5) * sy - 0.5));
+    const my = (r + 0.5 - band[0]) * sy - 0.5;
+    if (my < -0.5 || my > size - 0.5) return -1; // außerhalb des Streifens: weder Himmel noch Gelände
+    const fy = Math.max(0, Math.min(size - 1, my));
     const fx = Math.max(0, Math.min(size - 1, (c + 0.5) * sx - 0.5));
     const y0 = Math.floor(fy);
     const x0 = Math.floor(fx);

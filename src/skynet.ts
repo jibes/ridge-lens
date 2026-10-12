@@ -227,3 +227,22 @@ function concat(xs: Tensor[]): Tensor {
   }
   return { c, h: xs[0].h, w: xs[0].w, data: out };
 }
+
+/**
+ * Kontrast je Farbkanal auf 1.–99. Perzentil strecken (in place): hebt Berge im Dunst vom
+ * Himmel ab. Am Feldbild (Zürichsee) erkannte das Netz die Voralpen erst damit.
+ */
+export function stretchContrast(rgba: Uint8ClampedArray): void {
+  const n = rgba.length / 4;
+  for (let k = 0; k < 3; k++) {
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < n; i++) hist[rgba[i * 4 + k]]++;
+    let lo = 0;
+    let hi = 255;
+    for (let acc = 0; lo < 255 && (acc += hist[lo]) < n * 0.01; lo++);
+    for (let acc = 0; hi > 0 && (acc += hist[hi]) < n * 0.01; hi--);
+    if (hi - lo < 8) continue;
+    const s = 255 / (hi - lo);
+    for (let i = 0; i < n; i++) rgba[i * 4 + k] = (rgba[i * 4 + k] - lo) * s;
+  }
+}

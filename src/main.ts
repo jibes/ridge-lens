@@ -10,7 +10,7 @@ import type { ComputeRequest, PanoramaResult, Peak, WorkerMessage } from './prot
 import { applyDom, compassLabels, detectLang, lang, setLang, storedLangChoice, storeLangChoice, t, type Key, type Lang } from './i18n';
 import { CameraFeed, DEFAULT_CAMERA_FOV, displayHfov, fitTilt, fovLongFromDisplay, type TiltSample } from './camera';
 import type { VisionDebug, VisionRequest, VisionResponse } from './vision-worker';
-import { screenToDir, type BodyTarget, type MatchResult, type StarRef } from './vision';
+import { horizonAt, screenToDir, type BodyTarget, type MatchResult, type StarRef } from './vision';
 import { drawDebug } from './debug-overlay';
 import { SKYNET_SIZE } from './skynet';
 import { CAMERA, DARK, LIGHT, renderOverview, renderView, turnToTarget, type PlacedLabel, type SkyBody } from './render';
@@ -1945,8 +1945,9 @@ function drawDebugOverlay() {
   drawDebug(viewCtx, r.width, r.height, {
     segLine: d ? toScreen(d.d.segY, d.cam) : [],
     colorLine: d ? toScreen(d.d.colorY, d.cam) : [],
-    mask: d?.d.mask && d.d.maskSize ? { size: d.d.maskSize, data: d.d.mask } : null,
+    mask: d?.d.mask && d.d.maskSize ? { size: d.d.maskSize, data: d.d.mask, aspect: d.d.maskBand ? d.d.maskBand[1] - d.d.maskBand[0] : 1 } : null,
     lines,
+    band: d?.d.maskBand ? [d.d.maskBand[0] * d.cam.height, d.d.maskBand[1] * d.cam.height] : null,
     // über Kurs-Chip bzw. Ziel-Chip und Dock
     bottomInset: r.bottom - Math.min(...[sensorInfo, targetChip, dockEl].filter((el) => !el.hidden).map((el) => el.getBoundingClientRect().top)) + 6,
     topInset: statusEl.getBoundingClientRect().bottom - r.top,
@@ -2020,6 +2021,7 @@ function visionTick() {
   const pixels = visionCtx.getImageData(0, 0, cols, rows).data;
   const stars = !moving ? starFrame(vw, vh, sw, sh) : undefined;
   const seg = !moving && !stars && skyAiIn.checked ? segFrame(vw, vh, sw, sh) : undefined;
+  const segBand = seg ? segBandNow : undefined;
   visionBusy = true;
   lastVisionSent = now;
   offsetPitchAtSend = totalPitchOffset();
@@ -2039,19 +2041,31 @@ function visionTick() {
       moving,
       stars,
       seg,
+      segBand,
       debug: debugIn.checked,
     } satisfies VisionRequest,
     [pixels.buffer, ...(stars ? [stars.pixels.buffer] : []), ...(seg ? [seg.buffer] : [])],
   );
 }
 
-/** Tagsüber: derselbe Ausschnitt auf 256×256 gestaucht (so wurde das Netz trainiert). */
+/**
+ * Tagsüber: Streifen um den erwarteten Horizont (Höhe = Breite/4, mind. ±6°) auf 256×256 gestaucht.
+ * Feiner als das ganze Bild: ferne Berge (≈ 1° hoch) fielen dort auf 1–2 Maskenzeilen.
+ */
+let segBandNow: [number, number] = [0, 1];
 const segCanvas = document.createElement('canvas');
 segCanvas.width = segCanvas.height = SKYNET_SIZE;
 const segCtx = segCanvas.getContext('2d', { willReadFrequently: true })!;
 function segFrame(vw: number, vh: number, sw: number, sh: number) {
   if (night && night.fade > 0.3) return undefined;
-  segCtx.drawImage(videoEl, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, SKYNET_SIZE, SKYNET_SIZE);
+  // Erwarteter Horizont in der Bildmitte (Modell, aktuelle Ausrichtung)
+  const center = pano ? projector(cam)(cam.heading, horizonAt(pano.horizon, pano.azStep, cam.heading)) : null;
+  const F = cam.width / 2 / Math.tan((cam.hfov / 2) * (Math.PI / 180));
+  const bh = Math.min(cam.height, Math.max(cam.width / 4, 2 * F * Math.tan(6 * (Math.PI / 180))));
+  const yc = center ? center[1] : cam.height / 2;
+  const by0 = Math.max(0, Math.min(cam.height - bh, yc - bh / 2));
+  segBandNow = [by0 / cam.height, (by0 + bh) / cam.height];
+  segCtx.drawImage(videoEl, (vw - sw) / 2, (vh - sh) / 2 + (by0 / cam.height) * sh, sw, (bh / cam.height) * sh, 0, 0, SKYNET_SIZE, SKYNET_SIZE);
   return segCtx.getImageData(0, 0, SKYNET_SIZE, SKYNET_SIZE).data;
 }
 

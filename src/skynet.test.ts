@@ -1,7 +1,7 @@
 // @ts-ignore -- Node-Typen sind nicht eingebunden; läuft nur unter Vitest
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { SkyNet, SKYNET_SIZE } from './skynet';
+import { SkyNet, SKYNET_SIZE, stretchContrast } from './skynet';
 import { extractSkylineSeg } from './vision';
 
 function load() {
@@ -56,5 +56,40 @@ describe('SkyNet', () => {
       expect(Math.abs(sky.y[c] - ridge((c + 0.5) * 1.6) * h)).toBeLessThan(2);
     }
     expect(n).toBeGreaterThan(0.9 * w);
+  });
+  it('Streifen um den Horizont: Silhouette über die Streifenlage zurückgerechnet', () => {
+    const w = 160;
+    const h = 300;
+    const ridgeY = (x: number) => ridge(x * 1.6) * h; // Bildzeile der Silhouette
+    const px = scene(w, h, ridgeY);
+    // Streifen Zeilen 100–180 in hoher Auflösung rendern (Breite 1024 → 256²)
+    const [b0, b1] = [100, 180];
+    const S = SKYNET_SIZE;
+    const strip = scene(S, S, (x) => ((ridgeY((x * w) / S) - b0) / (b1 - b0)) * S);
+    stretchContrast(strip);
+    const mask = net.segment(strip, S, S);
+    const windows = Array.from({ length: w }, () => [20, h - 20] as [number, number]);
+    const sky = extractSkylineSeg(px, w, h, windows, mask.prob, mask.size, [b0, b1]);
+    let n = 0;
+    for (let c = 0; c < w; c++) {
+      if (Number.isNaN(sky.y[c])) continue;
+      n++;
+      expect(Math.abs(sky.y[c] - ridgeY(c + 0.5))).toBeLessThan(2);
+    }
+    expect(n).toBeGreaterThan(0.9 * w);
+  });
+
+  it('Kontraststreckung spreizt einen flauen Kanal auf 0–255', () => {
+    const px = new Uint8ClampedArray(400 * 4);
+    for (let i = 0; i < 400; i++) px.set([100 + (i % 41), 120, 130 + (i % 21), 255], i * 4);
+    stretchContrast(px);
+    let lo = 255;
+    let hi = 0;
+    for (let i = 0; i < 400; i++) {
+      lo = Math.min(lo, px[i * 4]);
+      hi = Math.max(hi, px[i * 4]);
+    }
+    expect(lo).toBeLessThan(10);
+    expect(hi).toBeGreaterThan(245);
   });
 });

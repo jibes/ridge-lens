@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 // Bildabgleich im Hintergrund, damit die Anzeige flüssig bleibt.
 import type { Camera } from './projection';
-import { SkyNet, SKYNET_SIZE, type SkyNetModel } from './skynet';
+import { SkyNet, SKYNET_SIZE, stretchContrast, type SkyNetModel } from './skynet';
 import { SkylineAccumulator, treeTolerance, detectBody, detectStars, matchStars, type StarRef, extractSkyline, extractSkylineSeg, matchPitch, matchSkylineHaze, searchWindows, type BodyTarget, type MatchResult } from './vision';
 
 export type VisionRequest =
@@ -21,8 +21,10 @@ export type VisionRequest =
       moving: boolean;
       /** Nachts: Bild in höherer Auflösung (Sterne sind punktförmig) und Sterne/Planeten im Blickfeld. */
       stars?: { pixels: Uint8ClampedArray; cols: number; rows: number; refs: StarRef[] };
-      /** Tagsüber: derselbe Ausschnitt auf SKYNET_SIZE² gestaucht, für die Himmelserkennung. */
+      /** Tagsüber: Streifen um den erwarteten Horizont auf SKYNET_SIZE² gestaucht, für die Himmelserkennung. */
       seg?: Uint8ClampedArray;
+      /** Lage des Streifens als Anteil der Bildhöhe [oben, unten]. */
+      segBand?: [number, number];
       /** Diagnose-Overlay: Zwischenergebnisse mitschicken. */
       debug?: boolean;
     };
@@ -33,9 +35,10 @@ export interface VisionDebug {
   net: 'idle' | 'loading' | 'failed' | 'ready';
   colorY: Float32Array;
   segY?: Float32Array;
-  /** Himmelsmaske, 0–255, `maskSize`². */
+  /** Himmelsmaske, 0–255, `maskSize`², über den Streifen `maskBand` (Anteil der Bildhöhe). */
   mask?: Uint8Array;
   maskSize?: number;
+  maskBand?: [number, number];
   steps: string[];
 }
 
@@ -93,8 +96,10 @@ self.onmessage = (ev: MessageEvent<VisionRequest>) => {
   if (msg.seg) {
     if (net) {
       const t0 = performance.now();
+      stretchContrast(msg.seg);
       mask = net.segment(msg.seg, SKYNET_SIZE, SKYNET_SIZE);
-      sky = extractSkylineSeg(pixels, cols, rows, windows, mask.prob, mask.size);
+      const band = msg.segBand ?? [0, 1];
+      sky = extractSkylineSeg(pixels, cols, rows, windows, mask.prob, mask.size, [band[0] * rows, band[1] * rows]);
       segMs = performance.now() - t0;
     } else if (netState === 'idle') loadNet();
   }
@@ -108,6 +113,7 @@ self.onmessage = (ev: MessageEvent<VisionRequest>) => {
         segY: mask ? sky.y : undefined,
         mask: mask ? Uint8Array.from(mask.prob, (v) => Math.round(v * 255)) : undefined,
         maskSize: mask?.size,
+        maskBand: mask ? (msg.segBand ?? [0, 1]) : undefined,
         steps: [],
       }
     : undefined;

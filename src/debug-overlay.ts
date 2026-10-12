@@ -8,8 +8,11 @@ export interface DebugDraw {
   segLine: ([number, number] | null)[];
   /** Horizont aus Farbkanten. */
   colorLine: ([number, number] | null)[];
-  mask: { size: number; data: Uint8Array } | null;
+  /** aspect: Höhe des Streifens als Anteil der Bildhöhe. */
+  mask: { size: number; data: Uint8Array; aspect: number } | null;
   lines: string[];
+  /** Streifen der Himmelserkennung (Bildschirmzeilen oben/unten). */
+  band: [number, number] | null;
   /** Platz unten (Dock) und oben (Statuszeile), CSS-Pixel. */
   bottomInset: number;
   topInset: number;
@@ -41,6 +44,9 @@ export function drawDebug(ctx: CanvasRenderingContext2D, width: number, height: 
   // Farbkanten gelb gestrichelt unter der KI-Linie (cyan), damit Abweichungen auffallen
   polyline(ctx, d.colorLine, 'rgba(0,0,0,0.6)', 4, [6, 4]);
   polyline(ctx, d.colorLine, '#ffd400', 2, [6, 4]);
+  if (d.band) {
+    for (const y of d.band) polyline(ctx, [[0, y], [width, y]], 'rgba(255,255,255,0.7)', 1, [2, 6]);
+  }
   polyline(ctx, d.segLine, 'rgba(0,0,0,0.6)', 4, []);
   polyline(ctx, d.segLine, '#00e5ff', 2, []);
 
@@ -49,7 +55,7 @@ export function drawDebug(ctx: CanvasRenderingContext2D, width: number, height: 
   ctx.font = `${font}px ui-monospace, Menlo, Consolas, monospace`;
   const pad = 5;
   const maskW = d.mask ? Math.min(84, width * 0.2) : 0;
-  const maskH = d.mask ? (maskW * height) / width : 0;
+  const maskH = d.mask ? (maskW * height * d.mask.aspect) / width : 0;
   const boxW = width - 12;
   // Zeilen umbrechen (an Trennzeichen „ · “ bzw. Leerzeichen), nichts abschneiden; neben der Maske schmaler
   const wrapped: string[] = [];
