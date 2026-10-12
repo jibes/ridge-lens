@@ -1,4 +1,4 @@
-import { deltaDeg, normalizeDeg } from './geo';
+import { deltaDeg, distance, normalizeDeg } from './geo';
 import { OrientationTracker } from './orientation';
 import { decimalYear, declination as magneticDeclination } from './magnetic';
 import { prefetchArea } from './offline';
@@ -572,8 +572,42 @@ function locate(): Promise<Text | null> {
 $<HTMLButtonElement>('gps').addEventListener('click', async () => {
   const err = await locate();
   setNotice('gps', err && (() => `GPS: ${err()}`));
-  if (!err) compute();
+  if (!err) {
+    compute();
+    followPosition();
+  }
 });
+
+/**
+ * Standort mitverfolgen (Schiff, Bahn, Wanderung): Nach mehr als 120 m neu rechnen, höchstens
+ * alle 15 s und nur bei brauchbarer Genauigkeit. Nahe Hügel verschieben sich sonst schon
+ * nach wenigen hundert Metern sichtbar. Endet, sobald ein Ort von Hand gewählt wird.
+ */
+let watchId: number | null = null;
+let lastFollow = -Infinity;
+function followPosition() {
+  if (watchId !== null || !navigator.geolocation) return;
+  watchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      if (presetSel.value || pos.coords.accuracy > 100 || busy || !pano) return;
+      const here = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+      if (distance(here, { lat: pano.request.lat, lon: pano.request.lon }) < 120 || performance.now() - lastFollow < 15_000) return;
+      lastFollow = performance.now();
+      latIn.value = here.lat.toFixed(5);
+      lonIn.value = here.lon.toFixed(5);
+      eleIn.value = '';
+      compute();
+    },
+    () => {},
+    { enableHighAccuracy: true, maximumAge: 10_000 },
+  );
+}
+function stopFollowing() {
+  if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+  watchId = null;
+}
+presetSel.addEventListener('change', stopFollowing);
+for (const el of [latIn, lonIn]) el.addEventListener('input', stopFollowing);
 
 // --- Interaktion: Drehen, Neigen, Zoomen --------------------------------------------
 
@@ -2027,4 +2061,5 @@ if (matchMedia('(pointer: coarse)').matches) {
 void locate().then((err) => {
   if (err) setNotice('gps', () => t('gps.fallback', { err: err(), place: fromHash ? t('gps.placeFromLink') : PRESETS[0].name }));
   compute();
+  if (!err) followPosition();
 });

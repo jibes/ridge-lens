@@ -234,6 +234,19 @@ try {
   check(Math.abs(learned - 5) < 0.01, `Gelernter Kurs der Haltung angewandt (${learned})`);
   await p2.close();
 
+  // 7. Standort mitverfolgen: nach > 120 m neu rechnen
+  const geo = await browser.newContext({ viewport: { width: 412, height: 900 }, locale: 'de-DE', permissions: ['geolocation'], geolocation: { latitude: 47.3667, longitude: 8.5410, accuracy: 10 }, serviceWorkers: 'block' });
+  await geo.route('**/elevation-tiles-prod/**', (r) => r.fulfill({ status: 200, contentType: 'image/png', body: TILE, headers: { 'access-control-allow-origin': '*' } }));
+  await geo.route(/overpass|maps\.mail\.ru/, (r) => r.fulfill({ status: 200, contentType: 'text/plain', body: '', headers: { 'access-control-allow-origin': '*' } }));
+  const p3 = await geo.newPage();
+  await p3.goto(BASE);
+  await p3.waitForFunction(() => /m ü\. M\./.test(document.getElementById('status')?.textContent ?? ''), null, { timeout: 30_000 }).catch(() => {});
+  await geo.setGeolocation({ latitude: 47.3667, longitude: 8.5460, accuracy: 10 });
+  await p3.waitForTimeout(3000);
+  const lon = await p3.inputValue('#lon');
+  check(lon === '8.54600', `Standort mitverfolgt, neu gerechnet (lon ${lon})`);
+  await geo.close();
+
   check(errors.length === 0, `keine Skriptfehler${errors.length ? `: ${errors.join(' | ')}` : ''}`);
 } finally {
   await browser.close();
