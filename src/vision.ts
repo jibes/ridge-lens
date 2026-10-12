@@ -53,7 +53,7 @@ export function searchWindows(
   azStep: number,
   cols: number,
   rows: number,
-  azErr = 12,
+  azErr = 20,
   elErr = 4,
 ): [number, number][] {
   const out: [number, number][] = [];
@@ -281,7 +281,8 @@ export function matchSkyline(
   // Grob: Kurs × Neigung × fünf Bildwinkel-Stufen, jede zweite Spalte
   const coarse: { dh: number; dp: number; s: number; c: number }[] = [];
   for (const s of [0.88, 0.94, 1, 1.06, 1.12]) {
-    for (let dh = -12; dh <= 12; dh += 1) {
+    // ±20°: an Stahl (Steg, Brücke) liegt der Kompass auch 15–20° daneben
+    for (let dh = -20; dh <= 20; dh += 1) {
       for (let dp = -4; dp <= 4; dp += 0.5) coarse.push({ dh, dp, s, c: evaluate(dh, dp, s, 2).c });
     }
   }
@@ -300,7 +301,7 @@ export function matchSkyline(
         improved = false;
         for (const [a, b, c] of [[hStep, 0, 0], [-hStep, 0, 0], [0, pStep, 0], [0, -pStep, 0], [0, 0, sStep], [0, 0, -sStep]]) {
           const cand = { dh: local.dh + a, dp: local.dp + b, s: local.s + c };
-          if (Math.abs(cand.dh) > 13 || Math.abs(cand.dp) > 5 || cand.s < 0.84 || cand.s > 1.16) continue;
+          if (Math.abs(cand.dh) > 21 || Math.abs(cand.dp) > 5 || cand.s < 0.84 || cand.s > 1.16) continue;
           const r = evaluate(cand.dh, cand.dp, cand.s);
           if (r.c < local.c - 1e-6) {
             local = { ...cand, ...r };

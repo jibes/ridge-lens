@@ -102,6 +102,24 @@ describe('skyline matching', () => {
     expect(Math.hypot(xT - xF, yT - yF)).toBeLessThan(6);
   });
 
+  it('recovers a compass 18° off (steel pier)', () => {
+    for (const dh of [-18, 17]) {
+      const sensor: Camera = { ...truth, heading: truth.heading + dh, pitch: truth.pitch + 0.8 };
+      const m = runMatch(truth, sensor, mountainHorizon());
+      expect(m.ok).toBe(true);
+      expect(Math.abs(sensor.heading + m.dHeading - truth.heading)).toBeLessThan(0.3);
+    }
+  });
+
+  it('never accepts a wrong solution with large compass errors', () => {
+    const horizon = mountainHorizon();
+    for (let i = 0; i < 16; i++) {
+      const sensor: Camera = { ...truth, heading: truth.heading + noise(20), pitch: truth.pitch + noise(2), hfov: truth.hfov * (1 + noise(0.08)) };
+      const m = runMatch(truth, sensor, horizon, { clouds: i % 2 === 1 });
+      if (m.ok) expect(Math.abs(sensor.heading + m.dHeading - truth.heading)).toBeLessThan(0.5);
+    }
+  });
+
   it('works with clouds above the peaks', () => {
     const sensor: Camera = { ...truth, heading: 199, pitch: 1, hfov: 34 * 0.93 };
     const m = runMatch(truth, sensor, mountainHorizon(), { highClouds: true });
