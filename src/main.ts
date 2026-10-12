@@ -1362,6 +1362,36 @@ function saveProfile() {
 /** Aktuelle Haltung (Bildschirmdrehung | Neigungsstufe) und die beim letzten Versand ans Bild. */
 let posture = '';
 let postureAtSend = '';
+/**
+ * Kompass gestört (Stahl, Magnet, schlecht kalibriert): Braucht der Bildabgleich zweimal
+ * innerhalb von 3 min mehr als 15° Kurskorrektur, Hinweis zum Kalibrieren; verschwindet bei
+ * kleinen Korrekturen (< 8°) oder nach 3 min.
+ */
+let bigCorrections: number[] = [];
+let compassHintUntil = 0;
+function checkCompass(correction: number) {
+  const now = performance.now();
+  if (Math.abs(correction) > 15) {
+    bigCorrections = [...bigCorrections.filter((t) => now - t < 180_000), now];
+    if (bigCorrections.length >= 2) {
+      compassHintUntil = now + 180_000;
+      setNotice('compass', () => t('sensor.compassDisturbed', { deg: Math.round(Math.abs(correction)) }));
+    }
+  } else if (Math.abs(correction) < 8) {
+    bigCorrections = [];
+    if (compassHintUntil) {
+      compassHintUntil = 0;
+      setNotice('compass', null);
+    }
+  }
+}
+window.setInterval(() => {
+  if (compassHintUntil && performance.now() > compassHintUntil) {
+    compassHintUntil = 0;
+    setNotice('compass', null);
+  }
+}, 10_000);
+
 function learn(key: string, heading: number | null, pitch: number | null, weight: number) {
   if (!key) return;
   // Weicht ein Treffer stark vom Gelernten ab, ist es meist eine örtliche Störung (Stahl,
@@ -1989,6 +2019,7 @@ visionWorker.onmessage = (ev: MessageEvent<VisionResponse>) => {
   offset.heading = deltaDeg(offset.heading + VISION_GAIN * match.dHeading, 0);
   offset.pitch = Math.max(-20, Math.min(20, offset.pitch + VISION_GAIN * match.dPitch));
   saveOffset(source);
+  if (source !== 'pitch') checkCompass(deltaDeg(offsetHeadingAtSend + match.dHeading - manualAdj.heading, 0));
   // Ins Sensorprofil: die volle gemessene Korrektur (ohne manuellen Anteil) für die Haltung beim Aufnehmen
   const weight = { skyline: 1, stars: 1, pano: 0.7, sun: 0.6, moon: 0.6, pitch: 0.5 }[source];
   learn(
