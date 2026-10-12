@@ -203,6 +203,15 @@ describe('sun and moon as reference', () => {
     expect(Math.abs(sensor.pitch + m.dPitch - truth.pitch)).toBeLessThan(0.3);
   });
 
+  it('finds a strongly blooming sun even with a compass 17° off (steel pier)', () => {
+    const img = renderSky(truth, horizon, [{ az: sun.az, alt: sun.alt, glow: 3.5 }]);
+    const off: Camera = { ...truth, heading: truth.heading + 17, pitch: truth.pitch - 1 };
+    const m = detectBody(img, COLS, ROWS, off, sun, horizon, AZ_STEP);
+    expect(m.ok).toBe(true);
+    expect(Math.abs(off.heading + m.dHeading - truth.heading)).toBeLessThan(0.5);
+    expect(Math.abs(off.pitch + m.dPitch - truth.pitch)).toBeLessThan(0.5);
+  });
+
   it('recovers from the moon at night', () => {
     const moon: BodyTarget = { kind: 'moon', az: 214, alt: 10 };
     const img = renderSky(truth, horizon, [{ az: moon.az, alt: moon.alt, glow: 0.4 }], { night: true });

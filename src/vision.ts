@@ -371,8 +371,9 @@ export function detectBody(
   const F = cam.width / 2 / Math.tan((cam.hfov / 2) * RAD);
   const cx = p[0] * sx;
   const cy = p[1] * sy;
-  const rx = F * Math.tan(12 * RAD) * sx;
-  const ry = F * Math.tan(4 * RAD) * sy;
+  // Weit suchen: Der Kompass liegt an Stahl (Steg, Schiff, Geländer) auch 15–20° daneben
+  const rx = F * Math.tan(30 * RAD) * sx;
+  const ry = F * Math.tan(10 * RAD) * sy;
   const x0 = Math.max(0, Math.floor(cx - rx));
   const x1 = Math.min(w - 1, Math.ceil(cx + rx));
   const y0 = Math.max(0, Math.floor(cy - ry));
@@ -431,9 +432,10 @@ export function detectBody(
   blobs.sort((a, b) => b.n - a.n);
   const b = blobs[0];
   if (blobs.length > 1 && blobs[1].n >= 0.3 * b.n) return fail('ambiguous');
-  // Größe: Scheibe samt Überstrahlung höchstens ~6-facher Radius
+  // Größe: Scheibe samt Überstrahlung (Handykameras: Sonne oft als großer weißer Fleck)
   const r = Math.max(1, F * Math.tan(0.266 * RAD) * sx);
-  if (b.edge || b.n > Math.PI * (6 * r + 2) ** 2) return fail('poor-fit');
+  const maxR = body.kind === 'sun' ? 20 : 12;
+  if (b.edge || b.n > Math.PI * (maxR * r + 2) ** 2) return fail('poor-fit');
   const bw = b.maxX - b.minX + 1;
   const bh = b.maxY - b.minY + 1;
   if (b.n >= 6 && (Math.max(bw, bh) / Math.min(bw, bh) > 1.8 || b.n / (bw * bh) < 0.45)) return fail('poor-fit');

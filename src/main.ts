@@ -1330,7 +1330,11 @@ let posture = '';
 let postureAtSend = '';
 function learn(key: string, heading: number | null, pitch: number | null, weight: number) {
   if (!key) return;
-  profile.update(key, heading, pitch, weight, Date.now());
+  // Weicht ein Treffer stark vom Gelernten ab, ist es meist eine örtliche Störung (Stahl,
+  // Auto, Magnet): nur schwach einfließen lassen
+  const known = profile.get(key, Date.now());
+  const outlier = heading !== null && known?.heading != null && Math.abs(deltaDeg(heading, known.heading)) > 8;
+  profile.update(key, heading, pitch, outlier ? weight * 0.2 : weight, Date.now());
   saveProfile();
 }
 /** Haltung wechselt: ohne frischen Bildtreffer gilt der gelernte Wert der neuen Haltung. */
