@@ -23,7 +23,21 @@ export type VisionRequest =
       stars?: { pixels: Uint8ClampedArray; cols: number; rows: number; refs: StarRef[] };
       /** Tagsüber: derselbe Ausschnitt auf SKYNET_SIZE² gestaucht, für die Himmelserkennung. */
       seg?: Uint8ClampedArray;
+      /** Diagnose-Overlay: Zwischenergebnisse mitschicken. */
+      debug?: boolean;
     };
+
+/** Diagnose: erkannte Kanten (Zeile je Spalte, NaN = keine), Maske, Ergebnis jeder Stufe. */
+export interface VisionDebug {
+  method: 'seg' | 'color';
+  net: 'idle' | 'loading' | 'failed' | 'ready';
+  colorY: Float32Array;
+  segY?: Float32Array;
+  /** Himmelsmaske, 0–255, `maskSize`². */
+  mask?: Uint8Array;
+  maskSize?: number;
+  steps: string[];
+}
 
 export interface VisionResponse {
   id: number;
@@ -33,6 +47,7 @@ export interface VisionResponse {
   source: 'skyline' | 'pitch' | 'pano' | 'stars' | BodyTarget['kind'];
   /** Himmelserkennung lief (ms), sonst Farbkanten. */
   segMs?: number;
+  debug?: VisionDebug;
 }
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -48,7 +63,8 @@ let net: SkyNet | null = null;
 let netState: 'idle' | 'loading' | 'failed' = 'idle';
 function loadNet() {
   netState = 'loading';
-  const url = (f: string) => new URL(`../models/${f}`, import.meta.url);
+  // Relativ zum Worker-Skript (assets/ bzw. src/); import.meta.url würde Vite als Asset-Muster umschreiben
+  const url = (f: string) => new URL(`../models/${f}`, self.location.href);
   Promise.all([fetch(url('skynet.json')).then((r) => r.json()), fetch(url('skynet.bin')).then((r) => r.arrayBuffer())])
     .then(([model, bin]: [SkyNetModel, ArrayBuffer]) => {
       net = new SkyNet(model, new Float32Array(bin));
@@ -73,15 +89,31 @@ self.onmessage = (ev: MessageEvent<VisionRequest>) => {
   const windows = searchWindows(cam, horizon, azStep, cols, rows);
   let sky = null;
   let segMs: number | undefined;
+  let mask: { size: number; prob: Float32Array } | null = null;
   if (msg.seg) {
     if (net) {
       const t0 = performance.now();
-      const mask = net.segment(msg.seg, SKYNET_SIZE, SKYNET_SIZE);
+      mask = net.segment(msg.seg, SKYNET_SIZE, SKYNET_SIZE);
       sky = extractSkylineSeg(pixels, cols, rows, windows, mask.prob, mask.size);
       segMs = performance.now() - t0;
     } else if (netState === 'idle') loadNet();
   }
-  sky ??= extractSkyline(pixels, cols, rows, windows);
+  const color = sky && !msg.debug ? null : extractSkyline(pixels, cols, rows, windows);
+  sky ??= color!;
+  const dbg: VisionDebug | undefined = msg.debug
+    ? {
+        method: mask ? 'seg' : 'color',
+        net: net ? 'ready' : netState,
+        colorY: color!.y,
+        segY: mask ? sky.y : undefined,
+        mask: mask ? Uint8Array.from(mask.prob, (v) => Math.round(v * 255)) : undefined,
+        maskSize: mask?.size,
+        steps: [],
+      }
+    : undefined;
+  const step = (s: string) => dbg?.steps.push(s);
+  const fmt = (m: MatchResult) =>
+    m.ok ? `✓ dH ${m.dHeading.toFixed(2)} dP ${m.dPitch.toFixed(2)} fov×${m.fovScale.toFixed(3)} c ${m.cost.toFixed(3)}` : `✗ ${m.reason ?? ''}${Number.isFinite(m.cost) ? ` c ${m.cost.toFixed(3)}` : ''}`;
   const points: { x: number; y: number }[] = [];
   for (let c = 0; c < cols; c++) {
     if (!Number.isNaN(sky.y[c])) points.push({ x: ((c + 0.5) * cam.width) / cols, y: (sky.y[c] * cam.height) / rows });
@@ -92,45 +124,46 @@ self.onmessage = (ev: MessageEvent<VisionRequest>) => {
   }
   const now = performance.now();
   acc.add(skyPoints, cam, msg.offHeading, msg.offPitch, now);
+  const reply = (match: MatchResult, source: VisionResponse['source']) =>
+    self.postMessage({ id: msg.id, cam, match, source, segMs, debug: dbg } satisfies VisionResponse);
   const none: MatchResult = { ok: false, dHeading: 0, dPitch: 0, fovScale: 1, cost: Infinity };
+  step(`Spalten ${points.length}/${cols} (Himmel darüber ${skyPoints.length})`);
   if (msg.moving) {
-    self.postMessage({ id: msg.id, cam, match: none, source: 'skyline', segMs } satisfies VisionResponse);
+    step('Schwenk: nur Rundumprofil gesammelt');
+    reply(none, 'skyline');
     return;
   }
   const match = matchSkylineHaze(points, [horizon, ...haze], azStep, cam, cols, tols);
+  step(`Silhouette ${fmt(match)}${match.ok ? ` Dunst ${match.band}` : ''}`);
   if (!match.ok && msg.stars) {
     // Nachts: Sternmuster
     const st = msg.stars;
-    const m = matchStars(detectStars(st.pixels, st.cols, st.rows, cam, horizon, azStep), st.refs);
-    if (m.ok) {
-      self.postMessage({ id: msg.id, cam, match: m, source: 'stars' } satisfies VisionResponse);
-      return;
-    }
+    const blobs = detectStars(st.pixels, st.cols, st.rows, cam, horizon, azStep);
+    const m = matchStars(blobs, st.refs);
+    step(`Sterne ${blobs.length} Flecken/${st.refs.length} Ref. ${fmt(m)}`);
+    if (m.ok) return reply(m, 'stars');
   }
   if (!match.ok) {
     // Ohne brauchbare Silhouette: Sonne bzw. Mond als Fixpunkt
     for (const body of msg.bodies) {
       const m = detectBody(pixels, cols, rows, cam, body, horizon, azStep);
-      if (m.ok) {
-        self.postMessage({ id: msg.id, cam, match: m, source: body.kind } satisfies VisionResponse);
-        return;
-      }
+      step(`${body.kind === 'sun' ? 'Sonne' : 'Mond'} ${body.az.toFixed(1)}/${body.alt.toFixed(1)}° ${fmt(m)}`);
+      if (m.ok) return reply(m, body.kind);
     }
     // Einzelbild zu verdeckt oder zu flach: Rundumprofil aus den letzten Bildern
     const pano = acc.match([horizon, ...haze], azStep, now);
+    step(`Rundum ${pano.ok ? `✓ H ${pano.heading.toFixed(2)} P ${pano.pitch.toFixed(2)} c ${pano.cost.toFixed(3)}` : '✗'}`);
     if (pano.ok) {
       const m: MatchResult = { ok: true, dHeading: pano.heading - msg.offHeading, dPitch: pano.pitch - msg.offPitch, fovScale: 1, cost: pano.cost };
-      self.postMessage({ id: msg.id, cam, match: m, source: 'pano', segMs } satisfies VisionResponse);
-      return;
+      return reply(m, 'pano');
     }
     // Sonst wenigstens die Neigung
     // Je Modell-Silhouette (Dunst); widersprechen sich gültige Lösungen, keine Korrektur
-    const pitches = [horizon, ...haze].map((h) => matchPitch(skyPoints, h, azStep, cam, cols)).filter((m) => m.ok);
+    const all = [horizon, ...haze].map((h) => matchPitch(skyPoints, h, azStep, cam, cols));
+    step(`Neigung ${all.map(fmt).join(' | ')}`);
+    const pitches = all.filter((m) => m.ok);
     const pitch = pitches.sort((a, b) => a.cost - b.cost)[0];
-    if (pitch && pitches.every((m) => Math.abs(m.dPitch - pitch.dPitch) < 0.3)) {
-      self.postMessage({ id: msg.id, cam, match: pitch, source: 'pitch', segMs } satisfies VisionResponse);
-      return;
-    }
+    if (pitch && pitches.every((m) => Math.abs(m.dPitch - pitch.dPitch) < 0.3)) return reply(pitch, 'pitch');
   }
-  self.postMessage({ id: msg.id, cam, match, source: 'skyline', segMs } satisfies VisionResponse);
+  reply(match, 'skyline');
 };

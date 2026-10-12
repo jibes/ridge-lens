@@ -87,6 +87,11 @@ export class OrientationTracker {
   private fusion = new HeadingFusion();
   private handler = (e: Event) => this.onEvent(e as WebkitOrientationEvent);
   status: OrientationStatus | null = null;
+  /** Diagnose: letzter roher Kompasskurs (magnetisch, °) und Ereigniszähler je Art. */
+  readonly diag = { compass: NaN, compassT: -Infinity, absEvents: 0, relEvents: 0 };
+  get holdLeft(): number {
+    return Math.max(0, this.holdUntil - performance.now());
+  }
 
   private smoother = new AngleSmoother();
   private noiseMeter = new NoiseMeter();
@@ -167,6 +172,9 @@ export class OrientationTracker {
       this.lastAbsolute = t;
       this.status = 'absolute';
       const abs = anglesFor(e.alpha);
+      this.diag.compass = abs.heading;
+      this.diag.compassT = performance.now();
+      this.diag.absEvents++;
       this.fusion.tauSec = performance.now() < this.holdUntil ? 60 : 4;
       this.fusion.absolute(abs.heading, t);
       // Liefert der Browser parallel Gyro-Daten, steuern diese den Blick (siehe unten)
@@ -189,6 +197,7 @@ export class OrientationTracker {
 
     // Relative Ausrichtung (Android: Gyro + Beschleunigung, ohne Magnetometer): ruhig, Nord unbekannt
     this.lastRelative = t;
+    this.diag.relEvents++;
     const rel = anglesFor(e.alpha);
     if (t - this.lastAbsolute < 2000) {
       // Gyro-Kurs + langsam nachgeführter Kompass-Offset

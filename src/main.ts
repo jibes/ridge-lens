@@ -9,8 +9,9 @@ import { azimuthInView, projector, type Camera } from './projection';
 import type { ComputeRequest, PanoramaResult, Peak, WorkerMessage } from './protocol';
 import { applyDom, compassLabels, detectLang, lang, setLang, storedLangChoice, storeLangChoice, t, type Key, type Lang } from './i18n';
 import { CameraFeed, DEFAULT_CAMERA_FOV, displayHfov, fitTilt, fovLongFromDisplay, type TiltSample } from './camera';
-import type { VisionRequest, VisionResponse } from './vision-worker';
-import type { BodyTarget, MatchResult, StarRef } from './vision';
+import type { VisionDebug, VisionRequest, VisionResponse } from './vision-worker';
+import { screenToDir, type BodyTarget, type MatchResult, type StarRef } from './vision';
+import { drawDebug } from './debug-overlay';
 import { SKYNET_SIZE } from './skynet';
 import { CAMERA, DARK, LIGHT, renderOverview, renderView, turnToTarget, type PlacedLabel, type SkyBody } from './render';
 import { bodyPath, moonPosition, sunPosition, terrainEvents, type PathPoint } from './astro';
@@ -254,6 +255,7 @@ function render() {
     topInset: statusEl.getBoundingClientRect().bottom - view.getBoundingClientRect().top,
     overlay,
   });
+  if (debugIn.checked) drawDebugOverlay();
   if (overview.clientWidth) {
     overCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const targetAz = targetPoint()?.az ?? null;
@@ -557,6 +559,7 @@ function locate(): Promise<Text | null> {
   return new Promise((resolve) =>
     navigator.geolocation.getCurrentPosition(
       (pos) => {
+        gpsFix = { acc: pos.coords.accuracy, t: Date.now() };
         latIn.value = pos.coords.latitude.toFixed(5);
         lonIn.value = pos.coords.longitude.toFixed(5);
         // GPS-Höhe ist ellipsoidisch (CH ≈ 50 m über Meereshöhe) → Höhenmodell verwenden
@@ -585,11 +588,14 @@ $<HTMLButtonElement>('gps').addEventListener('click', async () => {
  * nach wenigen hundert Metern sichtbar. Endet, sobald ein Ort von Hand gewählt wird.
  */
 let watchId: number | null = null;
+/** Letzte GPS-Messung (Diagnose). */
+let gpsFix: { acc: number; t: number } | null = null;
 let lastFollow = -Infinity;
 function followPosition() {
   if (watchId !== null || !navigator.geolocation) return;
   watchId = navigator.geolocation.watchPosition(
     (pos) => {
+      gpsFix = { acc: pos.coords.accuracy, t: Date.now() };
       if (presetSel.value || pos.coords.accuracy > 100 || busy || !pano) return;
       const here = { lat: pos.coords.latitude, lon: pos.coords.longitude };
       if (distance(here, { lat: pano.request.lat, lon: pano.request.lon }) < 120 || performance.now() - lastFollow < 15_000) return;
@@ -1863,6 +1869,90 @@ skyAiIn.addEventListener('change', () => {
 /** Rechenzeit der letzten Himmelserkennung (ms), solange sie läuft. */
 let lastSegMs: number | undefined;
 
+/** Diagnose-Overlay im Bild (Horizontlinien, Maske, Kennzahlen) für Screenshots. */
+const debugIn = $<HTMLInputElement>('debug-overlay');
+const DEBUG_KEY = 'ridge-lens-debug';
+debugIn.checked = loadString(DEBUG_KEY) === 'on';
+debugIn.addEventListener('change', () => {
+  try {
+    localStorage.setItem(DEBUG_KEY, debugIn.checked ? 'on' : 'off');
+  } catch {
+    /* kein Speicher */
+  }
+  requestRender();
+});
+let lastDebug: { d: VisionDebug; cam: Camera; at: number } | null = null;
+let visionIdle = '';
+let visionMode = '';
+let visionOutcome = '';
+let lastEventCount = { abs: 0, rel: 0, t: performance.now(), absRate: 0, relRate: 0 };
+window.setInterval(() => {
+  if (!debugIn.checked) return;
+  const now = performance.now();
+  const dt = (now - lastEventCount.t) / 1000;
+  lastEventCount = {
+    abs: tracker.diag.absEvents,
+    rel: tracker.diag.relEvents,
+    t: now,
+    absRate: (tracker.diag.absEvents - lastEventCount.abs) / dt,
+    relRate: (tracker.diag.relEvents - lastEventCount.rel) / dt,
+  };
+  requestRender();
+}, 1000);
+
+function drawDebugOverlay() {
+  const f1 = (v: number) => (Number.isFinite(v) ? v.toFixed(1) : '–');
+  const f2 = (v: number) => (Number.isFinite(v) ? v.toFixed(2) : '–');
+  const ago = (t: number) => (Number.isFinite(t) ? `${((performance.now() - t) / 1000).toFixed(0)} s` : '–');
+  // Linien aus dem Abgleichbild in die aktuelle Ansicht umrechnen (Richtung bleibt gleich)
+  const toScreen = (y: Float32Array | undefined, snap: Camera) => {
+    if (!y) return [];
+    const proj = projector(cam);
+    const rows = Math.round((VISION_COLS * snap.height) / snap.width);
+    return Array.from(y, (r, c) => {
+      if (Number.isNaN(r)) return null;
+      const [az, el] = screenToDir(snap, ((c + 0.5) * snap.width) / VISION_COLS, (r * snap.height) / rows);
+      return proj(az, el);
+    });
+  };
+  const d = lastDebug && performance.now() - lastDebug.at < 10_000 ? lastDebug : null;
+  const ua = navigator.userAgent;
+  const android = /Android [\d.]+/.exec(ua)?.[0] ?? (/iPhone OS [\d_]+/.exec(ua)?.[0] ?? '');
+  const chrome = /(Chrome|CriOS|Firefox|Version)\/[\d]+/.exec(ua)?.[0] ?? '';
+  const raw = tracker.diag.compass;
+  const n = tracker.noise;
+  const learned = posture ? profile.get(posture, Date.now()) : null;
+  const sun = sky.find((b) => b.kind === 'sun');
+  const { w: vw, h: vh } = cameraFeed.size;
+  const log = corrLog
+    .slice(-4)
+    .reverse()
+    .map((e) => `${new Date(e.t).toLocaleTimeString('de-CH')} ${e.src} ${fmtSigned(e.dh)}/${fmtSigned(e.dp)}`);
+  const lines = [
+    `Ridge Lens ${import.meta.env.VITE_BUILD_ID} · ${new Date().toLocaleString('de-CH')} · ${android} ${chrome}`,
+    `Ort ${latIn.value || '–'}, ${lonIn.value || '–'} · ${pano ? `${pano.h0.toFixed(0)} m (DEM ${pano.demElevation.toFixed(0)})` : '–'} · GPS ±${gpsFix ? `${gpsFix.acc.toFixed(0)} m vor ${((Date.now() - gpsFix.t) / 1000).toFixed(0)} s` : '–'} · folgen ${watchId !== null ? 'an' : 'aus'} · Dekl ${f1(declination)}°`,
+    `Kompass roh ${f1(raw)}° (wahr ${f1(trueHeading(raw))}°, vor ${ago(tracker.diag.compassT)}) · ${tracker.status ?? '–'} · Ereignisse abs ${lastEventCount.absRate.toFixed(0)}/s rel ${lastEventCount.relRate.toFixed(0)}/s · Halten ${(tracker.holdLeft / 1000).toFixed(0)} s`,
+    `Ansicht H ${f1(cam.heading)} P ${f1(cam.pitch)} R ${f1(cam.roll)} · Rauschen ${n ? `${f2(n.heading)}/${f2(n.pitch)}/${f2(n.roll)}` : '–'} · Latenz ${videoLatency.toFixed(0)} ms`,
+    `Korr. Bild ${fmtSigned(offset.heading)}/${fmtSigned(offset.pitch)} · manuell ${fmtSigned(manualAdj.heading)}/${fmtSigned(manualAdj.pitch)} ×${manualAdj.fov.toFixed(3)} · Haltung ${posture || '–'} gelernt ${learned ? `${learned.heading !== null ? fmtSigned(learned.heading) : '–'}/${learned.pitch !== null ? fmtSigned(learned.pitch) : '–'} n ${learned.n.toFixed(1)}` : '–'}`,
+    `Bildwinkel ${f2(cam.hfov)}° (Kamera ${f2(cameraFov)}°, n ${loadString(FOV_COUNT_KEY) || 0}) · Video ${vw}×${vh} · Ansicht ${cam.width.toFixed(0)}×${cam.height.toFixed(0)}@${devicePixelRatio}`,
+    `Abgleich ${visionIdle || visionMode} · gesendet vor ${ago(lastVisionSent || -Infinity)} · ruhig ${calmCount} · KI ${skyAiIn.checked ? (d?.d.net ?? '?') : 'aus'}${lastSegMs !== undefined ? ` ${lastSegMs.toFixed(0)} ms` : ''} · Linie ${d?.d.method ?? '–'}`,
+    ...(d ? d.d.steps.map((s) => `  ${s}`) : ['  (noch kein Diagnosebild)']),
+    `Ergebnis ${visionOutcome || '–'} · letzter Treffer ${lastMatchSource} vor ${ago(lastMatchAt)}${compassHintUntil ? ' · KOMPASS GESTÖRT' : ''}`,
+    `Panorama ${pano ? `${pano.complete ? 'voll' : 'teilweise'} · ${pano.peaks.length} Gipfel · Dunst ${pano.hazeHorizons.length} · Kachelfehler ${pano.failedTiles}` : '–'} · Sonne ${sun ? `${f1(sun.az)}/${f1(sun.alt)}°` : '–'} · Nacht ${night ? night.fade.toFixed(2) : '0'}`,
+    ...log.map((s) => `  ${s}`),
+  ];
+  const r = view.getBoundingClientRect();
+  drawDebug(viewCtx, r.width, r.height, {
+    segLine: d ? toScreen(d.d.segY, d.cam) : [],
+    colorLine: d ? toScreen(d.d.colorY, d.cam) : [],
+    mask: d?.d.mask && d.d.maskSize ? { size: d.d.maskSize, data: d.d.mask } : null,
+    lines,
+    // über Kurs-Chip bzw. Ziel-Chip und Dock
+    bottomInset: r.bottom - Math.min(...[sensorInfo, targetChip, dockEl].filter((el) => !el.hidden).map((el) => el.getBoundingClientRect().top)) + 6,
+    topInset: statusEl.getBoundingClientRect().bottom - r.top,
+  });
+}
+
 const VISION_COLS = 160;
 /** Anteil einer Korrektur, der pro Abgleich übernommen wird (gleitend statt sprunghaft). */
 const VISION_GAIN = 0.5;
@@ -1895,8 +1985,18 @@ function visionTick() {
     calmCount = 0;
     calmPose = pose;
   }
-  if (calmCount >= 3 && now - lastVisionSent < 4000) return;
-  if (!autoAlignIn.checked || visionBusy || !(steady || moving) || !pano || !pano.complete || !sensorOn || !cameraShown() || document.hidden) return;
+  if (calmCount >= 3 && now - lastVisionSent < 4000) return void (visionIdle = 'ruhig, alle 4 s');
+  visionIdle =
+    !autoAlignIn.checked ? 'aus'
+    : visionBusy ? 'rechnet'
+    : !(steady || moving) ? 'Bewegung zu schnell'
+    : !pano || !pano.complete ? 'Panorama unvollständig'
+    : !sensorOn ? 'kein Sensor'
+    : !cameraShown() ? 'keine Kamera'
+    : document.hidden ? 'verborgen'
+    : '';
+  if (visionIdle || !pano) return;
+  visionMode = moving ? 'Schwenk' : 'ruhig';
   if (visionHorizon !== pano.horizon) {
     visionHorizon = pano.horizon;
     visionWorker.postMessage({
@@ -1939,6 +2039,7 @@ function visionTick() {
       moving,
       stars,
       seg,
+      debug: debugIn.checked,
     } satisfies VisionRequest,
     [pixels.buffer, ...(stars ? [stars.pixels.buffer] : []), ...(seg ? [seg.buffer] : [])],
   );
@@ -2039,15 +2140,24 @@ visionWorker.onmessage = (ev: MessageEvent<VisionResponse>) => {
   lastSegMs = ev.data.segMs;
   const { match, cam: snap } = ev.data;
   const source = ev.data.source;
+  if (ev.data.debug) {
+    lastDebug = { d: ev.data.debug, cam: snap, at: performance.now() };
+    if (debugIn.checked) requestRender();
+  }
+  visionOutcome = match.ok ? `${source}: übernommen` : `${source}: kein Treffer`;
   if (!match.ok || !sensorOn || !cameraShown()) return;
   calmCount = Math.abs(match.dHeading) < 0.3 && Math.abs(match.dPitch) < 0.2 ? calmCount + 1 : 0;
   if (source === 'pitch' && calibrateFromTilt(match, snap)) {
     lastMatchAt = performance.now();
     lastMatchSource = 'fov';
+    visionOutcome = 'Neigung → Bildwinkel kalibriert';
     requestRender();
     return;
   }
-  if (source !== 'pitch' && !confirmHeading(match.dHeading)) return;
+  if (source !== 'pitch' && !confirmHeading(match.dHeading)) {
+    visionOutcome = `${source}: ${fmtSigned(match.dHeading)}° wartet auf 2. Bild`;
+    return;
+  }
   // Bildbezug hält den Kurs; der Kompass zieht ihn danach nur noch langsam nach
   if (source !== 'pitch') tracker.holdCompass(120_000);
   // Korrekturen beziehen sich auf die Kamera zum Aufnahmezeitpunkt; Offsets sind darin enthalten

@@ -94,6 +94,12 @@ await ctx.route('**/peaks/sats.json', (r) =>
   }),
 );
 await ctx.route(/overpass|maps\.mail\.ru/, (r) => r.fulfill({ status: 200, contentType: 'text/plain', body: '', headers: { 'access-control-allow-origin': '*' } }));
+// Modell der Himmelserkennung: Anfragen aus dem Worker sieht nur das Routing des Kontexts
+let modelLoaded = false;
+await ctx.route('**/models/skynet.bin', (r) => {
+  modelLoaded = true;
+  return r.continue();
+});
 const page = await ctx.newPage();
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
@@ -206,6 +212,27 @@ try {
   const t1 = await videoTime();
   await page.waitForTimeout(800);
   check((await videoTime()) > t1, 'Kamerabild läuft nach Rückkehr in den Vordergrund weiter');
+
+  // 5b. Diagnose-Overlay mit Himmelserkennung: ruhig halten, Abgleich läuft, Modell wird geladen
+  await page.evaluate(() => {
+    const el = document.getElementById('debug-overlay');
+    el.checked = true;
+    el.dispatchEvent(new Event('change'));
+  });
+  await page.evaluate(async () => {
+    for (let i = 0; i < 150; i++) {
+      for (const type of ['deviceorientationabsolute', 'deviceorientation']) {
+        const ev = new Event(type);
+        Object.assign(ev, { alpha: 0, beta: 90, gamma: 0, absolute: type === 'deviceorientationabsolute' });
+        window.dispatchEvent(ev);
+      }
+      await new Promise((r) => setTimeout(r, 40));
+    }
+  });
+  const loaded = modelLoaded;
+  const isNight = await page.evaluate(() => document.documentElement.dataset.theme === 'night');
+  check(loaded || isNight, `Himmelserkennung geladen${isNight ? ' (Nacht: Farbkanten)' : ''}`);
+  if (process.env.E2E_SHOT) await page.screenshot({ path: process.env.E2E_SHOT });
 
   // 6. Lernendes Sensorprofil: gelernter Kurs der Haltung wird ohne Bildtreffer angewandt
   const p2 = await ctx.newPage();

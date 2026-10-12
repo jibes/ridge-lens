@@ -44,6 +44,8 @@ Automatischer Abgleich (`src/vision.ts`, im Worker `src/vision-worker.ts`, absch
 
 **Himmelserkennung per neuronalem Netz** (`src/skynet.ts`, abschaltbar „Himmel per KI erkennen“): tagsüber wird derselbe Ausschnitt zusätzlich auf 256×256 gestaucht und mit TinySkyNet (49 k Parameter, 188 KB, MIT) in eine Himmelsmaske 128×128 übersetzt; eigene Inferenz für Faltung/ReLU/bilineare Vergrößerung/Verketten, identisch zu onnxruntime (max. Abweichung 1e‑5), ohne Laufzeitbibliothek. Je Spalte gilt der unterste sichere Übergang Himmel → Gelände im Suchfenster als Horizont (`extractSkylineSeg`), verfeinert auf die stärkste Farbkante im Umkreis. Wolken, Dunst und Abendrot zählen als Himmel, Kanten darin und im Schnee entfallen. Modell wird beim ersten Tagbild nachgeladen; ohne Modell, nachts oder abgeschaltet bleibt die Farbkanten-Erkennung. Der Status zeigt „(KI, … ms)“. Umwandlung aus ONNX: `python3 scripts/export-skynet.py <onnx> public/models`.
 
+**Diagnose im Bild** (Einstellungen → Kamera, `src/debug-overlay.ts`): erkannter Horizont (cyan = KI, gelb gestrichelt = Farbkanten), Himmelsmaske und alle Kennzahlen in einem Kasten über dem Dock – Version, Ort/GPS, roher und fusionierter Kompass, Ereignisraten, Korrekturen, gelerntes Profil, Bildwinkel, Abgleichstatus mit dem Ergebnis jeder Stufe (Silhouette, Sterne, Sonne/Mond, Rundum, Neigung), Übernahme bzw. Ablehnungsgrund, letzte Korrekturen. Ein Screenshot genügt zur Fehlersuche.
+
 Manuell: Gipfel antippen und anpeilen richtet den Kompass aus; mit zwei Fingern den Bildwinkel anpassen (Wert und Zurücksetzen in den Einstellungen).
 
 ## Sonne und Mond
