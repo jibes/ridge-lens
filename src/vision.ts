@@ -193,6 +193,92 @@ export function extractSkyline(rgba: Uint8ClampedArray, w: number, h: number, wi
   return { y, conf, blueSky };
 }
 
+/**
+ * Himmel-/Geländegrenze aus einer Himmelsmaske (TinySkyNet, `size`×`size`, gleicher Bildausschnitt
+ * wie `rgba`): je Spalte der unterste Übergang Himmel → Gelände im Suchfenster, an dem die Maske
+ * darüber sicher Himmel und darunter sicher Gelände zeigt. Wolken zählen als Himmel, Kanten in
+ * Wolken oder im Schnee fallen so weg. Die grobe Maske (≈ 3 Bildzeilen je Maskenpunkt) wird auf
+ * die stärkste Farbkante in der Nähe verfeinert.
+ */
+export function extractSkylineSeg(
+  rgba: Uint8ClampedArray,
+  w: number,
+  h: number,
+  windows: [number, number][],
+  prob: Float32Array,
+  size: number,
+): Skyline {
+  const y = new Float32Array(w).fill(NaN);
+  const conf = new Float32Array(w);
+  const blueSky = new Uint8Array(w);
+  const sx = size / w;
+  const sy = size / h;
+  const at = (c: number, r: number) => {
+    const fy = Math.max(0, Math.min(size - 1, (r + 0.5) * sy - 0.5));
+    const fx = Math.max(0, Math.min(size - 1, (c + 0.5) * sx - 0.5));
+    const y0 = Math.floor(fy);
+    const x0 = Math.floor(fx);
+    const y1 = Math.min(size - 1, y0 + 1);
+    const x1 = Math.min(size - 1, x0 + 1);
+    const wy = fy - y0;
+    const wx = fx - x0;
+    return (
+      (prob[y0 * size + x0] * (1 - wx) + prob[y0 * size + x1] * wx) * (1 - wy) +
+      (prob[y1 * size + x0] * (1 - wx) + prob[y1 * size + x1] * wx) * wy
+    );
+  };
+  const grad = (c: number, r: number) => {
+    let d = 0;
+    for (let k = 0; k < 3; k++) {
+      const above = (rgba[((r - 2) * w + c) * 4 + k] + rgba[((r - 1) * w + c) * 4 + k]) / 2;
+      const below = (rgba[(r * w + c) * 4 + k] + rgba[((r + 1) * w + c) * 4 + k]) / 2;
+      d += (above - below) ** 2;
+    }
+    return Math.sqrt(d);
+  };
+  const reach = Math.max(2, Math.ceil(1 / sy));
+  for (let c = 0; c < w; c++) {
+    const [y0, y1] = windows[c];
+    if (y1 - y0 < 4) continue;
+    const p = new Float32Array(h);
+    for (let r = 0; r < h; r++) p[r] = at(c, r);
+    let edge = -1;
+    for (let r = Math.min(h - 2, y1); r >= Math.max(2, y0); r--) {
+      if (p[r - 1] >= 0.5 && p[r] < 0.5) {
+        // sicher: deutlich Himmel darüber, deutlich Gelände darunter
+        let up = 0;
+        let dn = 0;
+        const n = 2 * reach;
+        for (let k = 1; k <= n; k++) {
+          up += p[Math.max(0, r - k)];
+          dn += p[Math.min(h - 1, r + k - 1)];
+        }
+        if (up / n > 0.75 && dn / n < 0.25) {
+          edge = r;
+          break;
+        }
+      }
+    }
+    if (edge < 0) continue;
+    // Unterkante der Maske (Subpixel: p = 0.5) als Ausgang, dann stärkste Farbkante im Umkreis
+    const pa = p[edge - 1];
+    const pb = p[edge];
+    let best = edge - 1 + (pa - 0.5) / Math.max(1e-6, pa - pb) + 0.5;
+    let bestG = 0;
+    for (let r = Math.max(2, edge - reach); r <= Math.min(h - 3, edge + reach); r++) {
+      const g = grad(c, r);
+      if (g > bestG && g >= 20) {
+        bestG = g;
+        best = r;
+      }
+    }
+    y[c] = best;
+    conf[c] = 2 + bestG / 25;
+    blueSky[c] = 1;
+  }
+  return { y, conf, blueSky };
+}
+
 export interface MatchResult {
   ok: boolean;
   /** Korrekturen relativ zur übergebenen Kamera: Kurs (°), Neigung (°), Faktor auf das Sichtfeld. */

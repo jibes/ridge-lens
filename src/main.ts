@@ -11,6 +11,7 @@ import { applyDom, compassLabels, detectLang, lang, setLang, storedLangChoice, s
 import { CameraFeed, DEFAULT_CAMERA_FOV, displayHfov, fitTilt, fovLongFromDisplay, type TiltSample } from './camera';
 import type { VisionRequest, VisionResponse } from './vision-worker';
 import type { BodyTarget, MatchResult, StarRef } from './vision';
+import { SKYNET_SIZE } from './skynet';
 import { CAMERA, DARK, LIGHT, renderOverview, renderView, turnToTarget, type PlacedLabel, type SkyBody } from './render';
 import { bodyPath, moonPosition, sunPosition, terrainEvents, type PathPoint } from './astro';
 import { buildNightSky, darkness, prepareSky, type NightSky, type PreparedSky, type SkyData } from './nightsky';
@@ -1434,7 +1435,8 @@ function syncSensor() {
     (corrected ? ` · ${t('sensor.corrected', { offset: fmtSigned(manualAdj.heading) })}` : '') +
     (tracker.status === 'relative' ? ` · ${t('sensor.noCompass')}` : '') +
     (performance.now() - lastMatchAt < 3000
-      ? ` · ${t(({ skyline: 'sensor.matched', pitch: 'sensor.matchedPitch', pano: 'sensor.matchedPano', stars: 'sensor.matchedStars', fov: 'sensor.matchedFov', sun: 'sensor.matchedSun', moon: 'sensor.matchedMoon' } as const)[lastMatchSource])}`
+      ? ` · ${t(({ skyline: 'sensor.matched', pitch: 'sensor.matchedPitch', pano: 'sensor.matchedPano', stars: 'sensor.matchedStars', fov: 'sensor.matchedFov', sun: 'sensor.matchedSun', moon: 'sensor.matchedMoon' } as const)[lastMatchSource])}` +
+        (lastSegMs !== undefined && (lastMatchSource === 'skyline' || lastMatchSource === 'pitch' || lastMatchSource === 'fov') ? ` (${t('sensor.ai', { ms: lastSegMs.toFixed(0) })})` : '')
       : '');
 }
 
@@ -1839,7 +1841,27 @@ autoAlignIn.addEventListener('change', () => {
   } catch {
     /* kein Speicher */
   }
+  skyAiRow.hidden = !autoAlignIn.checked;
 });
+/** Himmelserkennung per neuronalem Netz (TinySkyNet) statt nur Farbkanten; abschaltbar zum Vergleich. */
+const skyAiIn = $<HTMLInputElement>('sky-ai');
+const skyAiRow = $<HTMLLabelElement>('sky-ai-row');
+const SKY_AI_KEY = 'ridge-lens-sky-ai';
+try {
+  skyAiIn.checked = localStorage.getItem(SKY_AI_KEY) !== 'off';
+} catch {
+  /* kein Speicher */
+}
+skyAiRow.hidden = !autoAlignIn.checked;
+skyAiIn.addEventListener('change', () => {
+  try {
+    localStorage.setItem(SKY_AI_KEY, skyAiIn.checked ? 'on' : 'off');
+  } catch {
+    /* kein Speicher */
+  }
+});
+/** Rechenzeit der letzten Himmelserkennung (ms), solange sie läuft. */
+let lastSegMs: number | undefined;
 
 const VISION_COLS = 160;
 /** Anteil einer Korrektur, der pro Abgleich übernommen wird (gleitend statt sprunghaft). */
@@ -1897,6 +1919,7 @@ function visionTick() {
   visionCtx.drawImage(videoEl, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, cols, rows);
   const pixels = visionCtx.getImageData(0, 0, cols, rows).data;
   const stars = !moving ? starFrame(vw, vh, sw, sh) : undefined;
+  const seg = !moving && !stars && skyAiIn.checked ? segFrame(vw, vh, sw, sh) : undefined;
   visionBusy = true;
   lastVisionSent = now;
   offsetPitchAtSend = totalPitchOffset();
@@ -1915,9 +1938,20 @@ function visionTick() {
       offPitch: totalPitchOffset(),
       moving,
       stars,
+      seg,
     } satisfies VisionRequest,
-    stars ? [pixels.buffer, stars.pixels.buffer] : [pixels.buffer],
+    [pixels.buffer, ...(stars ? [stars.pixels.buffer] : []), ...(seg ? [seg.buffer] : [])],
   );
+}
+
+/** Tagsüber: derselbe Ausschnitt auf 256×256 gestaucht (so wurde das Netz trainiert). */
+const segCanvas = document.createElement('canvas');
+segCanvas.width = segCanvas.height = SKYNET_SIZE;
+const segCtx = segCanvas.getContext('2d', { willReadFrequently: true })!;
+function segFrame(vw: number, vh: number, sw: number, sh: number) {
+  if (night && night.fade > 0.3) return undefined;
+  segCtx.drawImage(videoEl, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, SKYNET_SIZE, SKYNET_SIZE);
+  return segCtx.getImageData(0, 0, SKYNET_SIZE, SKYNET_SIZE).data;
 }
 
 /** Nachts: Ausschnitt in 480 px Breite (Sterne verschwinden beim starken Verkleinern) und Sterne im Blickfeld. */
@@ -2002,6 +2036,7 @@ function calibrateFromTilt(match: MatchResult, snap: Camera): boolean {
 
 visionWorker.onmessage = (ev: MessageEvent<VisionResponse>) => {
   visionBusy = false;
+  lastSegMs = ev.data.segMs;
   const { match, cam: snap } = ev.data;
   const source = ev.data.source;
   if (!match.ok || !sensorOn || !cameraShown()) return;
