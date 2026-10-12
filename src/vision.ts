@@ -289,7 +289,7 @@ export interface MatchResult {
   cost: number;
   /** Nur Neigungsabgleich: Winkel des erkannten Horizonts über der Bildmitte (für die Bildwinkel-Kalibrierung). */
   axis?: number;
-  reason?: 'few-columns' | 'flat-horizon' | 'poor-fit' | 'ambiguous';
+  reason?: 'few-columns' | 'flat-horizon' | 'poor-fit' | 'ambiguous' | 'unsharp';
 }
 
 const CAP = 1.5;
@@ -413,16 +413,18 @@ export function matchSkyline(
     }
     fit = { ...fb, dp: best.dp, c: best.c, inliers: best.inliers };
   }
-  if (fit.c > 0.15 || fit.inliers < 0.5) return fail('poor-fit', fb.c);
+  if (fit.c > 0.15 || fit.inliers < 0.5) return { ...fail('poor-fit', fb.c), dHeading: fb.dh, dPitch: fit.dp, fovScale: fb.s };
   // Zweite, fast gleich gute Lösung mit deutlich anderem Kurs: mehrdeutig (gleichförmige Kette)
+  // Abgelehnte Lösungen behalten Kurs/Neigung der besten Deckung (nur zur Diagnose)
+  const reject = (reason: MatchResult['reason']) => ({ ...fail(reason, fb.c), dHeading: fb.dh, dPitch: fit.dp, fovScale: fb.s });
   const rival = refined.find((e) => Math.abs(e.dh - fb.dh) > 2);
-  if (rival && rival.c < Math.max(fb.c * 1.6, fb.c + 0.1)) return fail('ambiguous', fb.c);
+  if (rival && rival.c < Math.max(fb.c * 1.6, fb.c + 0.1)) return reject('ambiguous');
   // Schärfe: ±1,5° Kursversatz muss deutlich schlechter passen, sonst ist der Kurs nicht
   // bestimmt (gerade Kanten, flache Abschnitte, fremde Objekte)
   for (const side of [-1.5, 1.5]) {
     let c = Infinity;
     for (const dp of [-0.3, -0.15, 0, 0.15, 0.3]) c = Math.min(c, evaluate(fb.dh + side, fb.dp + dp, fb.s).c);
-    if (c < Math.max(fb.c + 0.15, fb.c * 2.5)) return fail('ambiguous', fb.c);
+    if (c < Math.max(fb.c + 0.15, fb.c * 2.5)) return reject('unsharp');
   }
   return { ok: true, dHeading: fb.dh, dPitch: fit.dp, fovScale: fb.s, cost: fit.c };
 }

@@ -113,7 +113,9 @@ self.onmessage = (ev: MessageEvent<VisionRequest>) => {
     : undefined;
   const step = (s: string) => dbg?.steps.push(s);
   const fmt = (m: MatchResult) =>
-    m.ok ? `✓ dH ${m.dHeading.toFixed(2)} dP ${m.dPitch.toFixed(2)} fov×${m.fovScale.toFixed(3)} c ${m.cost.toFixed(3)}` : `✗ ${m.reason ?? ''}${Number.isFinite(m.cost) ? ` c ${m.cost.toFixed(3)}` : ''}`;
+    m.ok
+      ? `✓ dH ${m.dHeading.toFixed(2)} dP ${m.dPitch.toFixed(2)} fov×${m.fovScale.toFixed(3)} c ${m.cost.toFixed(3)}`
+      : `✗ ${m.reason ?? ''}${Number.isFinite(m.cost) ? ` c ${m.cost.toFixed(3)} (beste dH ${m.dHeading.toFixed(2)} dP ${m.dPitch.toFixed(2)})` : ''}`;
   const points: { x: number; y: number }[] = [];
   for (let c = 0; c < cols; c++) {
     if (!Number.isNaN(sky.y[c])) points.push({ x: ((c + 0.5) * cam.width) / cols, y: (sky.y[c] * cam.height) / rows });

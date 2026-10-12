@@ -207,6 +207,34 @@ function renderSky(
   return img;
 }
 
+/** Lange flache Kette mit einem Anstieg am Rand (Uetliberg von Zürich aus). */
+function rampHorizon(): Float32Array {
+  const h = new Float32Array(3600);
+  for (let i = 0; i < 3600; i++) {
+    const az = i * AZ_STEP;
+    const ramp = Math.min(2.2, Math.max(0, ((az - 214) * 2.2) / 7));
+    h[i] = 0.8 + ramp + 0.08 * Math.sin(az * 0.7);
+  }
+  return h;
+}
+
+describe('flat ridge with one rise (structure in a minority of columns)', () => {
+  // Der Kurs ist hier nur schwach bestimmt: lieber nicht übernehmen als falsch
+  it('never accepts a wrong heading', () => {
+    const horizon = rampHorizon();
+    for (let i = 0; i < 10; i++) {
+      const sensor: Camera = { ...truth, heading: truth.heading + noise(10), pitch: truth.pitch + noise(2), hfov: truth.hfov * (1 + noise(0.08)) };
+      const m = runMatch(truth, sensor, horizon);
+      if (m.ok) expect(Math.abs(sensor.heading + m.dHeading - truth.heading)).toBeLessThan(0.5);
+    }
+  });
+
+  it('a rejected match still reports where the best fit lies', () => {
+    const m = runMatch(truth, { ...truth, heading: 207, pitch: 2.4 }, rampHorizon());
+    if (!m.ok) expect(Math.abs(207 + m.dHeading - truth.heading)).toBeLessThan(1.5);
+  });
+});
+
 describe('sun and moon as reference', () => {
   const horizon = mountainHorizon();
   const sun: BodyTarget = { kind: 'sun', az: 207, alt: 9 };
