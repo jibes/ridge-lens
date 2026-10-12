@@ -41,7 +41,7 @@
         <button type="button" id="update-reload" class="primary" data-i18n="update.reload"></button>
       </div>
 
-      <div id="sensor-info" class="readout" hidden><span id="sensor-text"></span></div>
+      <div id="sensor-info" class="readout" hidden><span id="sensor-text"></span><button type="button" id="train-save" class="train-btn" hidden data-i18n-aria="aria.trainSave">＋</button></div>
 
       <div id="target" class="readout target" hidden>
         <span id="target-text"></span>
@@ -137,6 +137,15 @@
           </div>
         </div>
         <label class="check"><input id="debug-overlay" type="checkbox" /> <span data-i18n="settings.debug"></span></label>
+        <label class="check"><input id="train-collect" type="checkbox" /> <span data-i18n="settings.trainCollect"></span></label>
+        <div id="train-tools" hidden>
+          <p class="help" data-i18n="train.help"></p>
+          <p class="help" id="train-count"></p>
+          <div class="row">
+            <button type="button" id="train-export" data-i18n="train.export"></button>
+            <button type="button" id="train-clear" data-i18n="train.clear"></button>
+          </div>
+        </div>
         <details class="more">
           <summary data-i18n="settings.details"></summary>
           <p class="help" id="declination" hidden></p>

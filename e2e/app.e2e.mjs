@@ -234,6 +234,25 @@ try {
   check(loaded || isNight, `Himmelserkennung geladen${isNight ? ' (Nacht: Farbkanten)' : ''}`);
   if (process.env.E2E_SHOT) await page.screenshot({ path: process.env.E2E_SHOT });
 
+  // 5c. Trainingsdaten: einschalten, mit ＋ speichern, als ZIP exportieren
+  await page.evaluate(() => {
+    const el = document.getElementById('train-collect');
+    el.checked = true;
+    el.dispatchEvent(new Event('change'));
+  });
+  await page.evaluate(() => document.getElementById('train-save').click());
+  await page.waitForTimeout(1500);
+  const trainCount = await page.textContent('#train-count');
+  check(/^1 /.test(trainCount ?? ''), `Trainingsbild gespeichert (${trainCount})`);
+  const [download] = await Promise.all([
+    page.waitForEvent('download', { timeout: 10_000 }).catch(() => null),
+    page.evaluate(() => document.getElementById('train-export').click()),
+  ]);
+  const zipPath = download ? await download.path() : null;
+  const zip = zipPath ? (await import('node:fs')).readFileSync(zipPath) : null;
+  check(!!zip && zip.readUInt32LE(0) === 0x04034b50 && zip.includes('000001.json') && zip.includes('"lines"'), 'Trainingsdaten als ZIP exportiert');
+  if (zipPath && process.env.E2E_ZIP) (await import('node:fs')).copyFileSync(zipPath, process.env.E2E_ZIP);
+
   // 6. Lernendes Sensorprofil: gelernter Kurs der Haltung wird ohne Bildtreffer angewandt
   const p2 = await ctx.newPage();
   await p2.addInitScript(() => {

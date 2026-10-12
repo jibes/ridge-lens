@@ -12,6 +12,8 @@ import { CameraFeed, DEFAULT_CAMERA_FOV, displayHfov, fitTilt, fovLongFromDispla
 import type { VisionDebug, VisionRequest, VisionResponse } from './vision-worker';
 import { horizonAt, screenToDir, type BodyTarget, type MatchResult, type StarRef } from './vision';
 import { drawDebug } from './debug-overlay';
+import { addSample, allSamples, clearSamples, countSamples, type TrainMeta } from './trainstore';
+import { makeZip } from './zip';
 import { SKYNET_SIZE } from './skynet';
 import { CAMERA, DARK, LIGHT, renderOverview, renderView, turnToTarget, type PlacedLabel, type SkyBody } from './render';
 import { bodyPath, moonPosition, sunPosition, terrainEvents, type PathPoint } from './astro';
@@ -2069,6 +2071,7 @@ function visionTick() {
   const seg = !stars && skyAiIn.checked ? segFrame(vw, vh, sw, sh) : undefined;
   const segBand = seg ? segBandNow : undefined;
   const towerStrip = seg && !moving && landmarks.length ? towerFrame(vw, vh, sw, sh) : undefined;
+  pendingTrain = seg && !moving && trainIn.checked ? { id: visionId + 1, cam: { ...cam }, band: segBandNow, canvas: trainFrame(vw, vh, sw, sh, segBandNow) } : null;
   visionBusy = true;
   lastVisionSent = now;
   offsetPitchAtSend = totalPitchOffset();
@@ -2101,21 +2104,181 @@ function visionTick() {
  * Feiner als das ganze Bild: ferne Berge (≈ 1° hoch) fielen dort auf 1–2 Maskenzeilen.
  */
 let segBandNow: [number, number] = [0, 1];
-const segCanvas = document.createElement('canvas');
-segCanvas.width = segCanvas.height = SKYNET_SIZE;
-const segCtx = segCanvas.getContext('2d', { willReadFrequently: true })!;
-function segFrame(vw: number, vh: number, sw: number, sh: number) {
-  if (night && night.fade > 0.3) return undefined;
-  // Erwarteter Horizont in der Bildmitte (Modell, aktuelle Ausrichtung)
+/** Streifen um den erwarteten Horizont in der Bildmitte (Anteil der Bildhöhe). */
+function horizonBand(): [number, number] {
   const center = pano ? projector(cam)(cam.heading, horizonAt(pano.horizon, pano.azStep, cam.heading)) : null;
   const F = cam.width / 2 / Math.tan((cam.hfov / 2) * (Math.PI / 180));
   const bh = Math.min(cam.height, Math.max(cam.width / 4, 2 * F * Math.tan(6 * (Math.PI / 180))));
   const yc = center ? center[1] : cam.height / 2;
   const by0 = Math.max(0, Math.min(cam.height - bh, yc - bh / 2));
-  segBandNow = [by0 / cam.height, (by0 + bh) / cam.height];
-  segCtx.drawImage(videoEl, (vw - sw) / 2, (vh - sh) / 2 + (by0 / cam.height) * sh, sw, (bh / cam.height) * sh, 0, 0, SKYNET_SIZE, SKYNET_SIZE);
+  return [by0 / cam.height, (by0 + bh) / cam.height];
+}
+const segCanvas = document.createElement('canvas');
+segCanvas.width = segCanvas.height = SKYNET_SIZE;
+const segCtx = segCanvas.getContext('2d', { willReadFrequently: true })!;
+function segFrame(vw: number, vh: number, sw: number, sh: number) {
+  if (night && night.fade > 0.3) return undefined;
+  segBandNow = horizonBand();
+  const [b0, b1] = segBandNow;
+  segCtx.drawImage(videoEl, (vw - sw) / 2, (vh - sh) / 2 + b0 * sh, sw, (b1 - b0) * sh, 0, 0, SKYNET_SIZE, SKYNET_SIZE);
   return segCtx.getImageData(0, 0, SKYNET_SIZE, SKYNET_SIZE).data;
 }
+
+/**
+ * Trainingsdaten (nur lokal): Nach sicheren Abgleichen bzw. auf Knopfdruck den Horizontstreifen
+ * mit der projizierten Silhouette speichern; Export als ZIP. Daraus entsteht ein eigenes Modell.
+ */
+const trainIn = $<HTMLInputElement>('train-collect');
+const trainTools = $<HTMLDivElement>('train-tools');
+const trainCount = $<HTMLParagraphElement>('train-count');
+const trainSaveBtn = $<HTMLButtonElement>('train-save');
+const TRAIN_KEY = 'ridge-lens-train';
+const TRAIN_W = 512;
+/** Abgleiche, deren Ausrichtung für eine Beschriftung sicher genug ist. */
+const TRAIN_SOURCES = new Set(['skyline', 'tower', 'pano', 'sun']);
+trainIn.checked = loadString(TRAIN_KEY) === 'on';
+let pendingTrain: { id: number; cam: Camera; band: [number, number]; canvas: HTMLCanvasElement } | null = null;
+let lastTrain = { t: -Infinity, heading: NaN, lat: NaN, lon: NaN };
+function syncTrainUi() {
+  trainTools.hidden = !trainIn.checked;
+  trainSaveBtn.hidden = !trainIn.checked;
+  if (trainIn.checked)
+    void countSamples()
+      .then((n) => (trainCount.textContent = t('train.count', { n })))
+      .catch(() => (trainCount.textContent = ''));
+}
+trainIn.addEventListener('change', () => {
+  try {
+    localStorage.setItem(TRAIN_KEY, trainIn.checked ? 'on' : 'off');
+  } catch {
+    /* kein Speicher */
+  }
+  syncTrainUi();
+});
+syncTrainUi();
+
+/** Streifen (Anteil der Bildhöhe) in 512 px Breite unverzerrt aus dem Video. */
+function trainFrame(vw: number, vh: number, sw: number, sh: number, band: [number, number]): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.width = TRAIN_W;
+  c.height = Math.max(8, Math.round((TRAIN_W * (band[1] - band[0]) * cam.height) / cam.width));
+  c.getContext('2d')!.drawImage(videoEl, (vw - sw) / 2, (vh - sh) / 2 + band[0] * sh, sw, (band[1] - band[0]) * sh, 0, 0, c.width, c.height);
+  return c;
+}
+
+/** Silhouette (voll und Dunststufen) je Streifenspalte als Zeile im Streifen. */
+function trainLines(c: Camera, band: [number, number], w: number, h: number): TrainMeta['lines'] | null {
+  const p = pano;
+  if (!p?.complete) return null;
+  const proj = projector(c);
+  const top = band[0] * c.height;
+  const bandH = (band[1] - band[0]) * c.height;
+  const line = (hz: ArrayLike<number>) =>
+    Array.from({ length: w }, (_, x) => {
+      const [az] = screenToDir(c, ((x + 0.5) * c.width) / w, top + bandH / 2);
+      const q = proj(az, horizonAt(hz, p.azStep, az));
+      if (!q) return null;
+      const r = ((q[1] - top) / bandH) * h;
+      return r > -h && r < 2 * h ? Math.round(r * 100) / 100 : null;
+    });
+  return { full: line(p.horizon), h15: line(p.hazeHorizons[0].horizon), h35: line(p.hazeHorizons[1].horizon) };
+}
+
+async function saveTraining(canvas: HTMLCanvasElement, c: Camera, band: [number, number], source: string, cost: number) {
+  const lines = trainLines(c, band, canvas.width, canvas.height);
+  if (!lines || !pano) return;
+  const jpeg = await new Promise<Blob | null>((r) => canvas.toBlob(r, 'image/jpeg', 0.9));
+  if (!jpeg) return;
+  const meta: TrainMeta = {
+    t: Date.now(),
+    lat: pano.request.lat,
+    lon: pano.request.lon,
+    h0: pano.h0,
+    cam: { heading: c.heading, pitch: c.pitch, roll: c.roll, hfov: c.hfov, width: c.width, height: c.height },
+    band: [band[0] * c.height, band[1] * c.height],
+    w: canvas.width,
+    h: canvas.height,
+    lines,
+    source,
+    cost,
+  };
+  try {
+    const n = await addSample(meta, jpeg);
+    lastTrain = { t: performance.now(), heading: c.heading, lat: meta.lat, lon: meta.lon };
+    trainCount.textContent = t('train.count', { n });
+    setNotice('train', () => t('train.saved', { n }));
+    window.setTimeout(() => setNotice('train', null), 2500);
+  } catch (e) {
+    setNotice('train', () => t(e instanceof Error && e.message === 'full' ? 'train.full' : 'train.error'));
+    window.setTimeout(() => setNotice('train', null), 4000);
+  }
+}
+
+/** Nach einem Abgleich: sicherer Treffer → Streifen mit der vollen Korrektur beschriften. */
+function collectTraining(res: VisionResponse) {
+  const pend = pendingTrain;
+  if (!pend || pend.id !== res.id) return;
+  pendingTrain = null;
+  const m = res.match;
+  if (!m.ok || !TRAIN_SOURCES.has(res.source) || !trainIn.checked) return;
+  // Abwechslung: höchstens alle 20 s, und nur bei neuem Blick, neuem Ort oder nach 2 min
+  const now = performance.now();
+  const moved = !Number.isFinite(lastTrain.lat) || distance({ lat: lastTrain.lat, lon: lastTrain.lon }, { lat: pano?.request.lat ?? 0, lon: pano?.request.lon ?? 0 }) > 200;
+  const turned = !Number.isFinite(lastTrain.heading) || Math.abs(deltaDeg(res.cam.heading, lastTrain.heading)) > 8;
+  if (now - lastTrain.t < 20_000 || !(moved || turned || now - lastTrain.t > 120_000)) return;
+  const c: Camera = { ...res.cam, heading: normalizeDeg(res.cam.heading + m.dHeading), pitch: res.cam.pitch + m.dPitch, hfov: res.cam.hfov * m.fovScale };
+  void saveTraining(pend.canvas, c, pend.band, res.source, m.cost);
+}
+
+/** Knopf in der Kursanzeige: Ausrichtung passt (selbst geprüft) → jetzt speichern. */
+trainSaveBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (!cameraShown() || !pano?.complete) return;
+  const { w: vw, h: vh } = cameraFeed.size;
+  const scale = Math.max(cam.width / vw, cam.height / vh);
+  const band = horizonBand();
+  const canvas = trainFrame(vw, vh, cam.width / scale, cam.height / scale, band);
+  void saveTraining(canvas, { ...cam }, band, 'manual', 0);
+});
+
+$<HTMLButtonElement>('train-export').addEventListener('click', async () => {
+  const samples = await allSamples().catch(() => []);
+  if (!samples.length) return;
+  const enc = new TextEncoder();
+  const files: { name: string; data: Uint8Array }[] = [
+    {
+      name: 'ridge-lens-train/README.txt',
+      data: enc.encode(
+        'Ridge Lens Trainingsdaten. Je Beispiel NNNNNN.jpg (Horizontstreifen, volle Bildbreite) und NNNNNN.json:\n' +
+          'cam (korrigierte Ausrichtung), band (Ansichtspixel), w/h (Bild), lines.full/h15/h35 (projizierte Silhouette je Spalte\n' +
+          'als Bildzeile, null = außerhalb; h15/h35 = nur Gelände bis 15/35 km), source (skyline, tower, pano, sun, manual), cost.\n',
+      ),
+    },
+  ];
+  for (let i = 0; i < samples.length; i++) {
+    const id = String(i + 1).padStart(6, '0');
+    files.push({ name: `ridge-lens-train/${id}.jpg`, data: new Uint8Array(await samples[i].jpeg.arrayBuffer()) });
+    files.push({ name: `ridge-lens-train/${id}.json`, data: enc.encode(JSON.stringify(samples[i].meta)) });
+  }
+  const zip = makeZip(files);
+  const name = `ridge-lens-train-${new Date().toISOString().slice(0, 10)}.zip`;
+  const file = new File([zip], name, { type: 'application/zip' });
+  if (navigator.canShare?.({ files: [file] })) {
+    await navigator.share({ files: [file], title: name }).catch(() => {});
+    return;
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(file);
+  a.download = name;
+  a.click();
+  window.setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+});
+
+$<HTMLButtonElement>('train-clear').addEventListener('click', async () => {
+  if (!confirm(t('train.confirmClear'))) return;
+  await clearSamples().catch(() => {});
+  syncTrainUi();
+});
 
 /** Streifen der Himmelserkennung unverzerrt in 640 px Breite: Türme sind oft nur 0,1° breit. */
 const towerCanvas = document.createElement('canvas');
@@ -2213,6 +2376,7 @@ function calibrateFromTilt(match: MatchResult, snap: Camera): boolean {
 visionWorker.onmessage = (ev: MessageEvent<VisionResponse>) => {
   visionBusy = false;
   lastSegMs = ev.data.segMs;
+  collectTraining(ev.data);
   panoCoverage = ev.data.panoCoverage ?? 0;
   const { match, cam: snap } = ev.data;
   const source = ev.data.source;
