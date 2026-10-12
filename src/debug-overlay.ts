@@ -11,6 +11,8 @@ export interface DebugDraw {
   /** aspect: Höhe des Streifens als Anteil der Bildhöhe. */
   mask: { size: number; data: Uint8Array; aspect: number } | null;
   lines: string[];
+  /** Erwartete Turmspitzen (Bildschirmpunkt, Name). */
+  towers: { p: [number, number]; name: string }[];
   /** Streifen der Himmelserkennung (Bildschirmzeilen oben/unten). */
   band: [number, number] | null;
   /** Platz unten (Dock) und oben (Statuszeile), CSS-Pixel. */
@@ -46,6 +48,24 @@ export function drawDebug(ctx: CanvasRenderingContext2D, width: number, height: 
   polyline(ctx, d.colorLine, '#ffd400', 2, [6, 4]);
   if (d.band) {
     for (const y of d.band) polyline(ctx, [[0, y], [width, y]], 'rgba(255,255,255,0.7)', 1, [2, 6]);
+  }
+  // Türme: kleines Dreieck an der erwarteten Spitze
+  ctx.font = '10px ui-monospace, Menlo, Consolas, monospace';
+  for (const tw of d.towers) {
+    const [x, y] = tw.p;
+    ctx.fillStyle = '#ff8c00';
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x - 4, y - 7);
+    ctx.lineTo(x + 4, y - 7);
+    ctx.closePath();
+    ctx.fill();
+    if (tw.name) {
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(x + 5, y - 18, ctx.measureText(tw.name).width + 4, 12);
+      ctx.fillStyle = '#ffb45a';
+      ctx.fillText(tw.name, x + 7, y - 16);
+    }
   }
   polyline(ctx, d.segLine, 'rgba(0,0,0,0.6)', 4, []);
   polyline(ctx, d.segLine, '#00e5ff', 2, []);

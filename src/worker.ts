@@ -3,8 +3,9 @@ import { Dem, FAR_ZOOM, NEAR_RADIUS, NEAR_ZOOM, fetchTerrariumTile, metersPerPix
 import { bearing, deltaDeg, distance, elevationAngle, type LatLon } from './geo';
 import { castRay, extractRidges, linkRidges, observerGround, occlusionAngle, pruneLines, type MercSampler, type RayOptions, type RidgePoint, type Sampler } from './panorama';
 import { loadPeakTiles, tilesFor, type PeakRaw, type PeakTile } from './peaks';
+import { DEFAULT_HEIGHT, loadLandmarks } from './landmarks';
 import type { Key } from './i18n';
-import type { ComputeRequest, PanoramaResult, Peak, PeakTileProgress, WorkerMessage } from './protocol';
+import type { ComputeRequest, Landmark, PanoramaResult, Peak, PeakTileProgress, WorkerMessage } from './protocol';
 
 /** Fehler mit Übersetzungsschlüssel; der Hauptthread formuliert die Meldung. */
 class KeyedError extends Error {
@@ -21,6 +22,8 @@ const FIRST_TILE_WAIT_MS = 8_000;
 const SECTOR = 70;
 /** Sichtweiten (m) für die Dunst-Silhouetten des Bildabgleichs. */
 const HAZE_DISTS = [15_000, 35_000];
+/** Türme weiter weg sind im Bild zu dünn bzw. im Dunst. */
+const LANDMARK_RADIUS = 35_000;
 
 declare const self: DedicatedWorkerGlobalScope;
 let currentId = 0;
@@ -205,6 +208,26 @@ async function compute(req: ComputeRequest, post: (msg: WorkerMessage, transfer?
     all.points.buffer,
     all.offsets.buffer,
   ]);
+  // Türme: nur die, deren Spitze über das Gelände davor und über die Silhouette bis 35 km ragt
+  // (sonst stehen sie vor einem Hang statt vor dem Himmel)
+  const skyline35 = hazeHorizons[1].horizon;
+  void loadLandmarks(observer, Math.min(req.radius, LANDMARK_RADIUS)).then((list) => {
+    if (id !== currentId) return;
+    const landmarks: Landmark[] = [];
+    for (const l of list) {
+      const dist = distance(observer, l);
+      if (dist < 200 || dist > LANDMARK_RADIUS) continue;
+      const ground = sample(l.lat, l.lon, dist);
+      if (Number.isNaN(ground)) continue;
+      const height = l.height ?? DEFAULT_HEIGHT[l.kind];
+      const az = bearing(observer, l);
+      const top = elevationAngle(h0, ground + height, dist);
+      const sky = skyline35[Math.round(az / AZ_STEP) % nBins];
+      if (top < sky + 0.1 || top < occlusionAngle(sampleMerc, observer, h0, az, dist, rayOpts) + 0.1) continue;
+      landmarks.push({ az, dist, base: elevationAngle(h0, ground, dist), top, heightKnown: l.height !== null, kind: l.kind, name: l.name });
+    }
+    post({ id, type: 'landmarks', landmarks });
+  });
   const rest = raw.filter((p) => !inSector(bearing(observer, p)));
   if (rest.length) post({ id, type: 'peaks', peaks: process(rest), progress: { ...tileProgress }, error: peakError });
 

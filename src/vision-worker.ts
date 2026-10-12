@@ -1,10 +1,12 @@
 /// <reference lib="webworker" />
 // Bildabgleich im Hintergrund, damit die Anzeige flüssig bleibt.
 import type { Camera } from './projection';
+import type { Landmark } from './protocol';
 import { SkyNet, SKYNET_SIZE, stretchContrast, type SkyNetModel } from './skynet';
-import { SkylineAccumulator, treeTolerance, detectBody, detectStars, matchStars, type StarRef, extractSkyline, extractSkylineSeg, matchPitch, matchSkylineHaze, searchWindows, type BodyTarget, type MatchResult } from './vision';
+import { SkylineAccumulator, detectSpikes, matchLandmarks, skylineEvaluator, treeTolerance, detectBody, detectStars, matchStars, type StarRef, extractSkyline, extractSkylineSeg, matchPitch, matchSkylineHaze, searchWindows, type BodyTarget, type MatchResult } from './vision';
 
 export type VisionRequest =
+  | { type: 'landmarks'; landmarks: Landmark[] }
   | { type: 'horizon'; horizon: Float32Array; haze: Float32Array[]; azStep: number; dist: Float32Array; hazeDist: Float32Array[] }
   | {
       type: 'frame';
@@ -25,6 +27,8 @@ export type VisionRequest =
       seg?: Uint8ClampedArray;
       /** Lage des Streifens als Anteil der Bildhöhe [oben, unten]. */
       segBand?: [number, number];
+      /** Derselbe Streifen in voller Breite unverzerrt (Türme sind dünner als die Maske auflöst). */
+      towerStrip?: { pixels: Uint8ClampedArray; w: number; h: number };
       /** Diagnose-Overlay: Zwischenergebnisse mitschicken. */
       debug?: boolean;
     };
@@ -47,7 +51,7 @@ export interface VisionResponse {
   cam: Camera;
   match: MatchResult;
   /** Woran ausgerichtet wurde; Sonne/Mond liefern keinen Bildwinkel. */
-  source: 'skyline' | 'pitch' | 'pano' | 'stars' | BodyTarget['kind'];
+  source: 'skyline' | 'pitch' | 'pano' | 'stars' | 'tower' | BodyTarget['kind'];
   /** Himmelserkennung lief (ms), sonst Farbkanten. */
   segMs?: number;
   /** Abgedeckter Winkel des Rundumprofils (°, letzte 90 s). */
@@ -62,6 +66,8 @@ let haze: Float32Array[] = [];
 let tols: Float32Array[] = [];
 let azStep = 0.1;
 const acc = new SkylineAccumulator();
+/** Türme über dem Horizont (vom Panorama-Worker über den Hauptthread). */
+let landmarks: Landmark[] = [];
 
 /** Himmelserkennung, beim ersten Tagbild nachgeladen; schlägt das fehl, bleibt es bei den Farbkanten. */
 let net: SkyNet | null = null;
@@ -81,6 +87,10 @@ function loadNet() {
 
 self.onmessage = (ev: MessageEvent<VisionRequest>) => {
   const msg = ev.data;
+  if (msg.type === 'landmarks') {
+    landmarks = msg.landmarks;
+    return;
+  }
   if (msg.type === 'horizon') {
     horizon = msg.horizon;
     haze = msg.haze;
@@ -149,6 +159,35 @@ self.onmessage = (ev: MessageEvent<VisionRequest>) => {
   step(`Silhouette ${fmt(match)}${match.ok ? ` Dunst ${match.band}` : ''}`);
   // je Modell-Silhouette: voll, nur Gelände bis 15 km, bis 35 km (zeigt, warum „ambiguous“)
   match.bands.forEach((m, i) => step(`  ${['voll', '15 km', '35 km'][i] ?? i} ${fmt(m)}`));
+  if (!match.ok && mask && msg.towerStrip && landmarks.length) {
+    // Türme: dünne Spitzen über dem Horizont den bekannten Türmen zuordnen
+    const st = msg.towerStrip;
+    const band = msg.segBand ?? [0, 1];
+    const spikes = detectSpikes(st.pixels, st.w, st.h, cam, [band[0] * cam.height, band[1] * cam.height], mask.prob, mask.size);
+    const evals = [horizon, ...haze].map((h) => skylineEvaluator(points, h, azStep, cam));
+    const silhouette = (dh: number) => {
+      let best = { c: Infinity, dp: 0 };
+      for (const ev of evals) {
+        for (let dp = -4; dp <= 4; dp += 0.1) {
+          const c = ev(dh, dp, 1, 2).c;
+          if (c < best.c) best = { c, dp };
+        }
+      }
+      // fein nachführen
+      let fine = best;
+      for (const ev of evals) {
+        for (let dp = best.dp - 0.1; dp <= best.dp + 0.1; dp += 0.02) {
+          const c = ev(dh, dp, 1).c;
+          if (c < fine.c) fine = { c, dp };
+        }
+      }
+      return fine;
+    };
+    const silBest = Math.min(...match.bands.map((b) => b.cost));
+    const m = matchLandmarks(spikes, landmarks, centers, silhouette, silBest, { heading: cam.heading, half: cam.hfov / 2 });
+    step(`Türme ${spikes.length} Spitzen/${landmarks.length} Türme ${fmt(m)}${m.towers?.length ? ` (${m.towers.join(', ')})` : ''}`);
+    if (m.ok) return reply(m, 'tower');
+  }
   if (!match.ok && msg.stars) {
     // Nachts: Sternmuster
     const st = msg.stars;

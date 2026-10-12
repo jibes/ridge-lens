@@ -6,7 +6,7 @@ import { SensorProfile, orientationOf, pitchBand } from './profile';
 import type { SatInfo, SatPass } from './sats';
 import { dayTrack } from './tracks';
 import { azimuthInView, projector, type Camera } from './projection';
-import type { ComputeRequest, PanoramaResult, Peak, WorkerMessage } from './protocol';
+import type { ComputeRequest, Landmark, PanoramaResult, Peak, WorkerMessage } from './protocol';
 import { applyDom, compassLabels, detectLang, lang, setLang, storedLangChoice, storeLangChoice, t, type Key, type Lang } from './i18n';
 import { CameraFeed, DEFAULT_CAMERA_FOV, displayHfov, fitTilt, fovLongFromDisplay, type TiltSample } from './camera';
 import type { VisionDebug, VisionRequest, VisionResponse } from './vision-worker';
@@ -89,6 +89,8 @@ const overCtx = overview.getContext('2d')!;
 // Standard-Sichtfeld: Hochformat schmaler, damit Gipfel nicht winzig wirken
 const cam: Camera = { heading: 180, pitch: 2, roll: 0, hfov: innerWidth < innerHeight ? 35 : 45, width: 0, height: 0 };
 let pano: PanoramaResult | null = null;
+/** Türme über dem Horizont (Kursabgleich). */
+let landmarks: Landmark[] = [];
 let labels: PlacedLabel[] = [];
 let busy = false;
 let selected: Peak | null = null;
@@ -360,6 +362,11 @@ worker.onmessage = (ev: MessageEvent<WorkerMessage>) => {
     requestRender();
     return;
   }
+  if (msg.type === 'landmarks') {
+    landmarks = msg.landmarks;
+    visionWorker.postMessage({ type: 'landmarks', landmarks } satisfies VisionRequest);
+    return;
+  }
   if (msg.type === 'progress') {
     // Nach dem ersten Sektor rechnet der Rest still weiter; Statuszeile bleibt beim Ergebnis
     if (pano?.request.id !== msg.id) setStatus(() => t(msg.key, msg.params));
@@ -386,6 +393,8 @@ worker.onmessage = (ev: MessageEvent<WorkerMessage>) => {
     return;
   }
   pano = msg.result;
+  landmarks = [];
+  visionWorker.postMessage({ type: 'landmarks', landmarks } satisfies VisionRequest);
   applyRelief(pano, pano.peaks);
   selected = null;
   updateAlignBar();
@@ -1447,7 +1456,7 @@ function syncSensor() {
     (corrected ? ` · ${t('sensor.corrected', { offset: fmtSigned(manualAdj.heading) })}` : '') +
     (tracker.status === 'relative' ? ` · ${t('sensor.noCompass')}` : '') +
     (performance.now() - lastMatchAt < 3000
-      ? ` · ${t(({ skyline: 'sensor.matched', pitch: 'sensor.matchedPitch', pano: 'sensor.matchedPano', stars: 'sensor.matchedStars', fov: 'sensor.matchedFov', sun: 'sensor.matchedSun', moon: 'sensor.matchedMoon' } as const)[lastMatchSource])}` +
+      ? ` · ${t(({ skyline: 'sensor.matched', pitch: 'sensor.matchedPitch', pano: 'sensor.matchedPano', stars: 'sensor.matchedStars', tower: 'sensor.matchedTower', fov: 'sensor.matchedFov', sun: 'sensor.matchedSun', moon: 'sensor.matchedMoon' } as const)[lastMatchSource])}` +
         (lastSegMs !== undefined && (lastMatchSource === 'skyline' || lastMatchSource === 'pitch' || lastMatchSource === 'fov') ? ` (${t('sensor.ai', { ms: lastSegMs.toFixed(0) })})` : '')
       : '');
 }
@@ -1470,6 +1479,7 @@ const SOURCE_KEYS = {
   pitch: 'sensor.matchedPitch',
   pano: 'sensor.matchedPano',
   stars: 'sensor.matchedStars',
+  tower: 'sensor.matchedTower',
   fov: 'sensor.matchedFov',
   sun: 'sensor.matchedSun',
   moon: 'sensor.matchedMoon',
@@ -1969,7 +1979,7 @@ function drawDebugOverlay() {
     `Abgleich ${visionIdle || visionMode} · gesendet vor ${ago(lastVisionSent || -Infinity)} · ruhig ${calmCount} · KI ${skyAiIn.checked ? (d?.d.net ?? '?') : 'aus'}${lastSegMs !== undefined ? ` ${lastSegMs.toFixed(0)} ms` : ''} · Linie ${d?.d.method ?? '–'}`,
     ...(d ? d.d.steps.map((s) => `  ${s}`) : ['  (noch kein Diagnosebild)']),
     `Ergebnis ${visionOutcome || '–'} · letzter Treffer ${lastMatchSource} vor ${ago(lastMatchAt)}${compassHintUntil ? ' · KOMPASS GESTÖRT' : ''}`,
-    `Panorama ${pano ? `${pano.complete ? 'voll' : 'teilweise'} · ${pano.peaks.length} Gipfel · Dunst ${pano.hazeHorizons.length} · Kachelfehler ${pano.failedTiles}` : '–'} · Sonne ${sun ? `${f1(sun.az)}/${f1(sun.alt)}°` : '–'} · Nacht ${night ? night.fade.toFixed(2) : '0'}`,
+    `Panorama ${pano ? `${pano.complete ? 'voll' : 'teilweise'} · ${pano.peaks.length} Gipfel · ${landmarks.length} Türme · Dunst ${pano.hazeHorizons.length} · Kachelfehler ${pano.failedTiles}` : '–'} · Sonne ${sun ? `${f1(sun.az)}/${f1(sun.alt)}°` : '–'} · Nacht ${night ? night.fade.toFixed(2) : '0'}`,
     ...log.map((s) => `  ${s}`),
   ];
   const r = view.getBoundingClientRect();
@@ -1978,6 +1988,10 @@ function drawDebugOverlay() {
     colorLine: d ? toScreen(d.d.colorY, d.cam) : [],
     mask: d?.d.mask && d.d.maskSize ? { size: d.d.maskSize, data: d.d.mask, aspect: d.d.maskBand ? d.d.maskBand[1] - d.d.maskBand[0] : 1 } : null,
     lines,
+    towers: landmarks.flatMap((l) => {
+      const p = projector(cam)(l.az, l.top);
+      return p ? [{ p, name: l.name }] : [];
+    }),
     band: d?.d.maskBand ? [d.d.maskBand[0] * d.cam.height, d.d.maskBand[1] * d.cam.height] : null,
     // über Kurs-Chip bzw. Ziel-Chip und Dock
     bottomInset: r.bottom - Math.min(...[sensorInfo, targetChip, dockEl].filter((el) => !el.hidden).map((el) => el.getBoundingClientRect().top)) + 6,
@@ -2054,6 +2068,7 @@ function visionTick() {
   // auch beim Schwenken: dort entsteht das Rundumprofil
   const seg = !stars && skyAiIn.checked ? segFrame(vw, vh, sw, sh) : undefined;
   const segBand = seg ? segBandNow : undefined;
+  const towerStrip = seg && !moving && landmarks.length ? towerFrame(vw, vh, sw, sh) : undefined;
   visionBusy = true;
   lastVisionSent = now;
   offsetPitchAtSend = totalPitchOffset();
@@ -2074,9 +2089,10 @@ function visionTick() {
       stars,
       seg,
       segBand,
+      towerStrip,
       debug: debugIn.checked,
     } satisfies VisionRequest,
-    [pixels.buffer, ...(stars ? [stars.pixels.buffer] : []), ...(seg ? [seg.buffer] : [])],
+    [pixels.buffer, ...(stars ? [stars.pixels.buffer] : []), ...(seg ? [seg.buffer] : []), ...(towerStrip ? [towerStrip.pixels.buffer] : [])],
   );
 }
 
@@ -2099,6 +2115,19 @@ function segFrame(vw: number, vh: number, sw: number, sh: number) {
   segBandNow = [by0 / cam.height, (by0 + bh) / cam.height];
   segCtx.drawImage(videoEl, (vw - sw) / 2, (vh - sh) / 2 + (by0 / cam.height) * sh, sw, (bh / cam.height) * sh, 0, 0, SKYNET_SIZE, SKYNET_SIZE);
   return segCtx.getImageData(0, 0, SKYNET_SIZE, SKYNET_SIZE).data;
+}
+
+/** Streifen der Himmelserkennung unverzerrt in 640 px Breite: Türme sind oft nur 0,1° breit. */
+const towerCanvas = document.createElement('canvas');
+const towerCtx = towerCanvas.getContext('2d', { willReadFrequently: true })!;
+function towerFrame(vw: number, vh: number, sw: number, sh: number) {
+  const [b0, b1] = segBandNow;
+  const w = 640;
+  const h = Math.max(8, Math.round((w * (b1 - b0) * cam.height) / cam.width));
+  towerCanvas.width = w;
+  towerCanvas.height = h;
+  towerCtx.drawImage(videoEl, (vw - sw) / 2, (vh - sh) / 2 + b0 * sh, sw, (b1 - b0) * sh, 0, 0, w, h);
+  return { pixels: towerCtx.getImageData(0, 0, w, h).data, w, h };
 }
 
 /** Nachts: Ausschnitt in 480 px Breite (Sterne verschwinden beim starken Verkleinern) und Sterne im Blickfeld. */
@@ -2214,7 +2243,7 @@ visionWorker.onmessage = (ev: MessageEvent<VisionResponse>) => {
   if (source !== 'pitch') lastHeadingMatchAt = performance.now();
   if (source !== 'pitch') checkCompass(deltaDeg(offsetHeadingAtSend + match.dHeading - manualAdj.heading, 0));
   // Ins Sensorprofil: die volle gemessene Korrektur (ohne manuellen Anteil) für die Haltung beim Aufnehmen
-  const weight = { skyline: 1, stars: 1, pano: 0.7, sun: 0.6, moon: 0.6, pitch: 0.5 }[source];
+  const weight = { skyline: 1, stars: 1, tower: 0.8, pano: 0.7, sun: 0.6, moon: 0.6, pitch: 0.5 }[source];
   learn(
     postureAtSend,
     source === 'pitch' ? null : deltaDeg(offsetHeadingAtSend + match.dHeading - manualAdj.heading, 0),

@@ -315,6 +315,49 @@ export function treeTolerance(dist: ArrayLike<number>, treeHeight = 25): Float32
 }
 
 /**
+ * Robuste Restabweichung der Bildpunkte gegen die Modell-Silhouette für eine Korrektur
+ * (Kurs dh, Neigung dp, Bildwinkel-Faktor s): Mittel der besten 70 % der Spalten, je Spalte
+ * auf CAP gekappt (Wolkenkanten, Bäume am Rand fallen heraus). `stride` > 1 nutzt nur jede
+ * n-te Spalte; `withTol` wendet die Waldtoleranz an.
+ */
+export function skylineEvaluator(
+  points: { x: number; y: number }[],
+  horizon: ArrayLike<number>,
+  azStep: number,
+  cam: Camera,
+  tol?: ArrayLike<number>,
+): (dh: number, dp: number, s: number, stride?: number, withTol?: boolean) => { c: number; inliers: number } {
+  // Punkte relativ zur Bildmitte, einmal vorberechnet
+  const px = points.map((p) => p.x - cam.width / 2);
+  const py = points.map((p) => -(p.y - cam.height / 2));
+  const errs = new Float64Array(px.length);
+  return (dh, dp, s, stride = 1, withTol = false) => {
+    const { f, r, u } = cameraBasis({ heading: cam.heading + dh, pitch: cam.pitch + dp, roll: cam.roll });
+    const F = cam.width / 2 / Math.tan(((cam.hfov * s) / 2) * RAD);
+    let n = 0;
+    for (let i = 0; i < px.length; i += stride) {
+      const xc = px[i] / F;
+      const yc = py[i] / F;
+      const dx = f[0] + r[0] * xc + u[0] * yc;
+      const dy = f[1] + r[1] * xc + u[1] * yc;
+      const dz = f[2] + r[2] * xc + u[2] * yc;
+      const az = Math.atan2(dx, dy) * DEG;
+      const el = Math.atan2(dz, Math.hypot(dx, dy)) * DEG;
+      const d = el - horizonAt(horizon, azStep, az);
+      errs[n++] = Math.min(CAP, withTol && tol ? treeError(d, horizonAt(tol, azStep, az)) : Math.abs(d));
+    }
+    if (!n) return { c: Infinity, inliers: 0 };
+    const e = errs.subarray(0, n).sort();
+    const keep = Math.max(1, Math.round(n * 0.7));
+    let sum = 0;
+    for (let i = 0; i < keep; i++) sum += e[i];
+    let inliers = 0;
+    for (let i = 0; i < n; i++) if (e[i] < 0.3) inliers++;
+    return { c: sum / keep, inliers: inliers / n };
+  };
+}
+
+/**
  * Sucht Kurs-, Neigungs- und Bildwinkel-Korrektur, die die Bild-Horizontpunkte
  * (Bildschirmkoordinaten) bestmöglich auf den berechneten Horizont legt.
  */
@@ -341,37 +384,7 @@ export function matchSkyline(
   const std = Math.sqrt(els.reduce((s, v) => s + (v - m) ** 2, 0) / els.length);
   if (std < 0.25) return fail('flat-horizon');
 
-  // Punkte relativ zur Bildmitte, einmal vorberechnet
-  const px = points.map((p) => p.x - cam.width / 2);
-  const py = points.map((p) => -(p.y - cam.height / 2));
-  const errs = new Float64Array(px.length);
-  /**
-   * Robuste Restabweichung: Mittel der besten 70 % der Spalten (Wolkenkanten,
-   * Bäume am Rand fallen heraus). `stride` > 1 nutzt nur jede n-te Spalte.
-   */
-  const evaluate = (dh: number, dp: number, s: number, stride = 1, withTol = false) => {
-    const { f, r, u } = cameraBasis({ heading: cam.heading + dh, pitch: cam.pitch + dp, roll: cam.roll });
-    const F = cam.width / 2 / Math.tan(((cam.hfov * s) / 2) * RAD);
-    let n = 0;
-    for (let i = 0; i < px.length; i += stride) {
-      const xc = px[i] / F;
-      const yc = py[i] / F;
-      const dx = f[0] + r[0] * xc + u[0] * yc;
-      const dy = f[1] + r[1] * xc + u[1] * yc;
-      const dz = f[2] + r[2] * xc + u[2] * yc;
-      const az = Math.atan2(dx, dy) * DEG;
-      const el = Math.atan2(dz, Math.hypot(dx, dy)) * DEG;
-      const d = el - horizonAt(horizon, azStep, az);
-      errs[n++] = Math.min(CAP, withTol && tol ? treeError(d, horizonAt(tol, azStep, az)) : Math.abs(d));
-    }
-    const e = errs.subarray(0, n).sort();
-    const keep = Math.max(1, Math.round(n * 0.7));
-    let sum = 0;
-    for (let i = 0; i < keep; i++) sum += e[i];
-    let inliers = 0;
-    for (let i = 0; i < n; i++) if (e[i] < 0.3) inliers++;
-    return { c: sum / keep, inliers: inliers / n };
-  };
+  const evaluate = skylineEvaluator(points, horizon, azStep, cam, tol);
 
   // Grob: Kurs × Neigung × fünf Bildwinkel-Stufen, jede zweite Spalte
   const coarse: { dh: number; dp: number; s: number; c: number }[] = [];
@@ -906,4 +919,238 @@ export function matchStars(blobs: StarBlob[], refs: StarRef[], maxShift = 10): M
 
 function deltaAz(a: number, b: number): number {
   return ((((a - b) % 360) + 540) % 360) - 180;
+}
+
+/** Dünne Spitze über dem Horizont (Turm, Mast – oder Fahnenmast, Laterne). */
+export interface Spike {
+  az: number;
+  /** Höhenwinkel von Spitze und Horizont darunter (Grad, mit der übergebenen Kamera). */
+  top: number;
+  base: number;
+  /** Breite (Grad). */
+  width: number;
+}
+
+/**
+ * Dünne, dunkle Spitzen über dem Horizont in einem hochaufgelösten Streifen (`rgba`, w×h),
+ * der die Bildzeilen `band` (Ansichtspixel) abdeckt. Die Himmelsmaske (`prob`, size², gleicher
+ * Streifen) liefert den Horizont; je Spalte zählt, wie weit darüber Pixel deutlich vom
+ * Himmel der Zeile abweichen. Ein Turm ist dabei schmaler als 0,8°, ragt mindestens 0,25°
+ * auf, steht frei (Nachbarspalten flach) und endet unterhalb des Streifenrands (Fahnenmasten
+ * und Laternen ganz vorn reichen meist darüber hinaus).
+ */
+export function detectSpikes(
+  rgba: Uint8ClampedArray,
+  w: number,
+  h: number,
+  cam: Camera,
+  band: [number, number],
+  prob: Float32Array,
+  size: number,
+): Spike[] {
+  const at = (x: number, r: number) => {
+    const fx = Math.max(0, Math.min(size - 1, ((x + 0.5) * size) / w - 0.5));
+    const fy = Math.max(0, Math.min(size - 1, ((r + 0.5) * size) / h - 0.5));
+    const x0 = Math.floor(fx);
+    const y0 = Math.floor(fy);
+    const x1 = Math.min(size - 1, x0 + 1);
+    const y1 = Math.min(size - 1, y0 + 1);
+    const wx = fx - x0;
+    const wy = fy - y0;
+    return (prob[y0 * size + x0] * (1 - wx) + prob[y0 * size + x1] * wx) * (1 - wy) + (prob[y1 * size + x0] * (1 - wx) + prob[y1 * size + x1] * wx) * wy;
+  };
+  const toView = (x: number, r: number): [number, number] => [((x + 0.5) * cam.width) / w, band[0] + ((r + 0.5) * (band[1] - band[0])) / h];
+  const F = cam.width / 2 / Math.tan((cam.hfov / 2) * RAD);
+  const pxPerDeg = ((F * w) / cam.width) * RAD;
+
+  // Horizont je Spalte (erste Zeile ohne Himmel von oben), dann gleitender Median: dünne Türme
+  // verschwinden darin, der Grat bleibt
+  const sky = new Float32Array(w).fill(NaN);
+  for (let x = 0; x < w; x++) {
+    if (at(x, 0) < 0.5) continue;
+    for (let r = 1; r < h; r++) {
+      if (at(x, r) < 0.5) {
+        sky[x] = r;
+        break;
+      }
+    }
+  }
+  const K = Math.max(4, Math.round(1.5 * pxPerDeg));
+  const base = new Float32Array(w).fill(NaN);
+  const win: number[] = [];
+  for (let x = 0; x < w; x++) {
+    win.length = 0;
+    for (let k = Math.max(0, x - K); k <= Math.min(w - 1, x + K); k++) if (!Number.isNaN(sky[k])) win.push(sky[k]);
+    if (win.length > K) base[x] = win.sort((a, b) => a - b)[win.length >> 1];
+  }
+
+  // Himmelsfarbe je Zeile: Median sicherer Himmelspixel (jede 3. Spalte)
+  const ref = new Float32Array(h * 3).fill(NaN);
+  const ch: number[][] = [[], [], []];
+  for (let r = 0; r < h; r++) {
+    for (const c of ch) c.length = 0;
+    for (let x = 0; x < w; x += 3) {
+      if (at(x, r) < 0.85) continue;
+      const p = (r * w + x) * 4;
+      for (let k = 0; k < 3; k++) ch[k].push(rgba[p + k]);
+    }
+    if (ch[0].length < 10) continue;
+    for (let k = 0; k < 3; k++) ref[r * 3 + k] = ch[k].sort((a, b) => a - b)[ch[k].length >> 1];
+  }
+  // Lücken (Zeilen ohne sicheren Himmel) von der nächsten Zeile darüber übernehmen
+  for (let r = 1; r < h; r++) if (Number.isNaN(ref[r * 3])) for (let k = 0; k < 3; k++) ref[r * 3 + k] = ref[(r - 1) * 3 + k];
+  for (let r = h - 2; r >= 0; r--) if (Number.isNaN(ref[r * 3])) for (let k = 0; k < 3; k++) ref[r * 3 + k] = ref[(r + 1) * 3 + k];
+
+  // Je Spalte: Höhe des zusammenhängenden Nicht-Himmels über dem Grat (eine Zeile Lücke erlaubt)
+  const rise = new Float32Array(w);
+  const reachesTop = new Uint8Array(w);
+  for (let x = 0; x < w; x++) {
+    const b = base[x];
+    if (Number.isNaN(b) || Number.isNaN(ref[0])) continue;
+    let top = Math.round(b);
+    let gap = 0;
+    for (let r = Math.round(b) - 1; r >= 0; r--) {
+      const p = (r * w + x) * 4;
+      const d = Math.hypot(rgba[p] - ref[r * 3], rgba[p + 1] - ref[r * 3 + 1], rgba[p + 2] - ref[r * 3 + 2]);
+      if (d > 30) {
+        top = r;
+        gap = 0;
+      } else if (++gap > 1) break;
+    }
+    rise[x] = b - top;
+    if (top <= 1) reachesTop[x] = 1;
+  }
+
+  const minH = Math.max(3, 0.25 * pxPerDeg);
+  const maxW = Math.max(3, 0.8 * pxPerDeg);
+  const out: (Spike & { h: number })[] = [];
+  for (let x = 0; x < w; x++) {
+    if (rise[x] < minH) continue;
+    let e = x;
+    while (e + 1 < w && rise[e + 1] >= minH) e++;
+    const a = x;
+    x = e;
+    if (e - a + 1 > maxW || a === 0 || e === w - 1) continue;
+    let H = 0;
+    let top = false;
+    let cx = 0;
+    let cw = 0;
+    for (let k = a; k <= e; k++) {
+      H = Math.max(H, rise[k]);
+      top ||= !!reachesTop[k];
+      cx += (k + 0.5) * rise[k];
+      cw += rise[k];
+    }
+    if (top) continue;
+    // frei stehend: Nachbarspalten höchstens ein Drittel so hoch
+    let flank = 0;
+    for (const k of [a - 6, a - 5, a - 4, a - 3, a - 2, e + 2, e + 3, e + 4, e + 5, e + 6]) if (k >= 0 && k < w) flank = Math.max(flank, rise[k]);
+    if (flank > H / 3) continue;
+    const xc = cx / cw - 0.5;
+    const b = base[Math.round(xc)];
+    const [vx, vyTop] = toView(xc, b - H);
+    const [, vyBase] = toView(xc, b);
+    const [az, topEl] = screenToDir(cam, vx, vyTop);
+    const [, baseEl] = screenToDir(cam, vx, vyBase);
+    out.push({ az, top: topEl, base: baseEl, width: (e - a + 1) / pxPerDeg, h: H });
+  }
+  return out
+    .sort((p, q) => q.h - p.h)
+    .slice(0, 20)
+    .map(({ h: _h, ...s }) => s);
+}
+
+/** Turm aus dem Panorama (siehe protocol.ts Landmark). */
+export interface LandmarkRef {
+  az: number;
+  dist: number;
+  base: number;
+  top: number;
+  heightKnown: boolean;
+  name: string;
+}
+
+/**
+ * Spitzen im Bild den Türmen zuordnen. Jede Paarung (Kurs = Turm − Spitze, im Suchbereich
+ * um `centers`, Spitze passend hoch) ist eine Hypothese; Hypothesen mit gleichem Kurs
+ * (±0,4°) bilden eine Gruppe. Angenommen wird
+ * - eine Gruppe aus ≥ 2 Türmen, die klar vor jeder anderen liegt, wenn die Silhouette bei
+ *   diesem Kurs ordentlich passt (Restfehler ≤ 0,25°), oder
+ * - ein einzelner Turm, wenn es im ganzen Suchbereich nur diese eine Paarung gibt und die
+ *   Silhouette bei diesem Kurs gut (≤ 0,15°) und fast so gut wie bestmöglich passt – der
+ *   Turm legt dann den Kurs fest, den die flache Silhouette allein nicht bestimmt.
+ * Gegenprobe: Türme, die bei diesem Kurs im Bild stehen müssten, aber keine Spitze haben,
+ * zählen dagegen (höchstens ein Drittel der erwarteten darf fehlen – dünne, ferne Türme
+ * gehen im Dunst unter).
+ * `silhouette(dh)` liefert die beste Deckung (Neigung frei) bei Kurskorrektur dh;
+ * `view` ist Kurs und halber Bildwinkel der Kamera, mit der die Spitzen gemessen wurden.
+ */
+export function matchLandmarks(
+  spikes: Spike[],
+  refs: LandmarkRef[],
+  centers: number[],
+  silhouette: (dh: number) => { c: number; dp: number },
+  silhouetteBest: number,
+  view: { heading: number; half: number },
+): MatchResult & { towers?: string[] } {
+  const fail = (reason: MatchResult['reason'], dh = 0, c = Infinity): MatchResult => ({ ok: false, dHeading: dh, dPitch: 0, fovScale: 1, cost: c, reason });
+  if (!spikes.length || !refs.length) return fail('few-columns');
+  const hyps: { dh: number; li: number; si: number; dp: number | null }[] = [];
+  refs.forEach((l, li) => {
+    spikes.forEach((s, si) => {
+      const dh = deltaAz(l.az, s.az);
+      if (centers.every((c) => Math.abs(dh - c) > 21)) return;
+      // Höhe der Spitze: bekannte Höhe ±1,2° (Neigungsfehler), sonst über dem Fuß und nicht
+      // höher als ein 300-m-Turm
+      if (l.heightKnown) {
+        if (Math.abs(s.top - l.top) > 1.2) return;
+      } else if (s.top < l.base - 0.5 || s.top > l.base + Math.atan(300 / l.dist) / RAD + 1.2) return;
+      hyps.push({ dh, li, si, dp: l.heightKnown ? l.top - s.top : null });
+    });
+  });
+  if (!hyps.length) return fail('poor-fit');
+  // Gruppen gleichen Kurses; je Gruppe verschiedene Türme und Spitzen zählen
+  hyps.sort((a, b) => a.dh - b.dh);
+  const groups: { dh: number; towers: Set<number>; spikes: Set<number>; members: typeof hyps; expected: number }[] = [];
+  for (const hy of hyps) {
+    const members = hyps.filter((o) => Math.abs(o.dh - hy.dh) <= 0.25);
+    const towers = new Set(members.map((m) => m.li));
+    const sp = new Set(members.map((m) => m.si));
+    const dh = members.reduce((a, m) => a + m.dh, 0) / members.length;
+    // Türme, die bei diesem Kurs im Bild (mit 1° Rand) stehen müssten
+    const expected = refs.filter((l) => Math.abs(deltaAz(l.az - dh, view.heading)) < view.half - 1).length;
+    groups.push({ dh, towers, spikes: sp, members, expected });
+  }
+  const score = (g: (typeof groups)[number]) => {
+    const k = Math.min(g.towers.size, g.spikes.size);
+    return k >= Math.ceil((2 * g.expected) / 3) ? k : 0;
+  };
+  groups.sort((a, b) => score(b) - score(a));
+  const best = groups[0];
+  const k = score(best);
+  if (!k) return fail('poor-fit', best.dh);
+  const rival = Math.max(0, ...groups.filter((g) => Math.abs(g.dh - best.dh) > 1).map(score));
+  const sil = silhouette(best.dh);
+  const names = [...best.towers].map((i) => refs[i].name).filter(Boolean);
+  // Neigung: aus der Silhouette, wenn sie gut passt, sonst aus bekannten Turmhöhen
+  const known = best.members.filter((m) => m.dp !== null).map((m) => m.dp!);
+  const dp = sil.c <= 0.15 || !known.length ? sil.dp : known.reduce((a, b) => a + b, 0) / known.length;
+  // Die Silhouette muss bei diesem Kurs fast so gut passen wie bestmöglich (zufällige
+  // Paarungen von Laternen oder Bootsmasten mit Türmen landen meist anderswo). Ohne
+  // auswertbare Silhouette (flacher Horizont) entscheidet die Neigung aus bekannten Turmhöhen.
+  const silOk = Number.isFinite(silhouetteBest) && sil.c <= Math.min(0.25, silhouetteBest + 0.05);
+  const heightsAgree = known.length >= 2 && Math.max(...known) - Math.min(...known) <= 0.5 && Math.abs(known.reduce((a, b) => a + b, 0) / known.length - sil.dp) <= 0.8;
+  if (k >= 2) {
+    if (rival >= k) return fail('ambiguous', best.dh, sil.c);
+    if (!silOk && !heightsAgree) return fail('poor-fit', best.dh, sil.c);
+    return { ok: true, dHeading: best.dh, dPitch: dp, fovScale: 1, cost: sil.c, towers: names };
+  }
+  // Ein Turm: nur eindeutig und mit passender Silhouette; ist die Turmhöhe bekannt, muss
+  // auch die Neigung aus der Turmspitze zur Silhouette passen
+  const distinct = new Set(groups.map((g) => Math.round(g.dh / 0.4)));
+  if (hyps.length > 1 && distinct.size > 1) return fail('ambiguous', best.dh, sil.c);
+  const m = best.members[0];
+  if (m.dp !== null ? Math.abs(m.dp - sil.dp) > 0.8 : !Number.isFinite(silhouetteBest)) return fail('poor-fit', best.dh, sil.c);
+  if (sil.c > Math.min(0.15, silhouetteBest + 0.05)) return fail('poor-fit', best.dh, sil.c);
+  return { ok: true, dHeading: best.dh, dPitch: dp, fovScale: 1, cost: sil.c, towers: names };
 }

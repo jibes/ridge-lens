@@ -8,6 +8,8 @@
 //             fame = Zahl der Wikidata-Sitelinks (1 = Verweis, noch unbekannt; 0 = kein Verweis)
 // index.json: { generated, coverage: "global", osm, tiles: ["46_8", …] } (Kacheln ohne Gipfel fehlen)
 // meta.json:  { osm: Zeitpunkt des Auszugs, filter: osmium-Filter, rev: Verarbeitungsstand des Auszugs }
+// lm/:        Türme als Fixpunkte des Bildabgleichs (src/landmarks.ts), gleiche 1°-Kacheln:
+//             [[lat, lon, height|null, kind, name], …], lm/index.json { tiles }; nur beim frischen Auszug neu
 // fame.json:  { Q1374: 75, … } (nur für den Build, wird nicht veröffentlicht)
 import { createReadStream } from 'node:fs';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
@@ -33,12 +35,44 @@ function parseEle(raw) {
   return Number.isFinite(v) && v > -500 && v < 9000 ? Math.round(v) : null;
 }
 
+/** OSM-`height` in Metern (wie parseHeight in src/landmarks.ts). */
+function parseHeight(raw) {
+  if (!raw) return null;
+  const m = raw.replace(',', '.').match(/\d+(\.\d+)?/);
+  if (!m) return null;
+  let v = parseFloat(m[0]);
+  if (/ft|feet|'/.test(raw)) v *= 0.3048;
+  return v > 2 && v < 700 ? Math.round(v) : null;
+}
+
+/** Taugliche Türme – gleiche Regeln wie classifyLandmark in src/landmarks.ts. */
+export function classifyLandmark(tags) {
+  const height = parseHeight(tags.height);
+  const type = tags['tower:type'] ?? '';
+  switch (tags.man_made) {
+    case 'communications_tower':
+      return { kind: 'c', height };
+    case 'tower':
+      if (type === 'communication') return { kind: 'c', height };
+      if (type === 'observation' || type === 'lookout') return { kind: 'o', height };
+      if (type === 'bell_tower' || type === 'minaret') return { kind: 'b', height };
+      return height !== null && height >= 25 ? { kind: 'w', height } : null;
+    case 'mast':
+      return height !== null && height >= 40 ? { kind: 'm', height } : null;
+    case 'chimney':
+      return height !== null && height >= 50 ? { kind: 'h', height } : null;
+    default:
+      return null;
+  }
+}
+
 /**
  * Gipfel aus dem osmium-Auszug (GeoJSON-Sequenz, eine Zeile je Knoten, Kennung "n123"
  * per --add-unique-id=type_id). Zeilenweise gelesen: global rund 1 Mio. Zeilen.
  */
 export async function readExtract(path) {
   const rows = new Map();
+  const landmarks = [];
   const lines = createInterface({ input: createReadStream(path), crlfDelay: Infinity });
   for await (const raw of lines) {
     const line = raw.replace(/^\x1e/, '').trim();
@@ -52,11 +86,33 @@ export async function readExtract(path) {
     const id = Number(/^n(\d+)$/.exec(String(f.id ?? ''))?.[1]);
     const [lon, lat] = f.geometry?.type === 'Point' ? f.geometry.coordinates : [];
     const t = f.properties ?? {};
+    if (t.man_made) {
+      const c = classifyLandmark(t);
+      if (c && Number.isFinite(lat) && Number.isFinite(lon)) landmarks.push([+lat.toFixed(5), +lon.toFixed(5), c.height, c.kind, t.name ?? '']);
+      continue;
+    }
+    if (t.natural !== 'peak' && t.natural !== 'volcano') continue;
     if (!id || !Number.isFinite(lat) || !Number.isFinite(lon) || !t.name || rows.has(id)) continue;
     const qid = /^Q\d+$/.test(t.wikidata ?? '') ? t.wikidata : '';
     rows.set(id, { id, lat, lon, ele: parseEle(t.ele), name: t.name, names: LANGS.map((l) => t[`name:${l}`] ?? ''), qid, kind: t.natural ?? '' });
   }
-  return [...rows.values()];
+  return { peaks: [...rows.values()], landmarks };
+}
+
+/** Türme als 1°-Kacheln nach lm/ (ersetzt den bisherigen Stand vollständig). */
+async function writeLandmarks(list) {
+  const dir = new URL('lm/', OUT);
+  await rm(dir, { recursive: true, force: true });
+  await mkdir(dir, { recursive: true });
+  const tiles = new Map();
+  for (const r of list) {
+    const key = `${Math.floor(r[0])}_${Math.floor(r[1])}`;
+    if (!tiles.has(key)) tiles.set(key, []);
+    tiles.get(key).push(r);
+  }
+  for (const [key, rows] of tiles) await writeFile(new URL(`${key}.json`, dir), JSON.stringify(rows));
+  await writeFile(new URL('index.json', dir), JSON.stringify({ generated: new Date().toISOString(), tiles: [...tiles.keys()].sort() }));
+  console.log(`Türme: ${list.length} in ${tiles.size} Kacheln`);
 }
 
 /**
@@ -170,8 +226,10 @@ const extract = process.env.PEAKS_OSM_GEOJSONSEQ;
 
 let rows;
 if (extract) {
-  rows = await readExtract(extract);
-  console.log(`Auszug: ${rows.length} benannte Gipfel`);
+  const ex = await readExtract(extract);
+  rows = ex.peaks;
+  console.log(`Auszug: ${rows.length} benannte Gipfel, ${ex.landmarks.length} Türme`);
+  if (ex.landmarks.length) await writeLandmarks(ex.landmarks);
   if (rows.length < Number(process.env.PEAKS_MIN_ROWS ?? 100_000)) {
     throw new Error(`nur ${rows.length} Gipfel im Auszug – Datensatz bleibt unverändert`);
   }

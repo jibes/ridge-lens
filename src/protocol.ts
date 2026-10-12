@@ -35,6 +35,19 @@ export interface Peak {
   visible: boolean;
 }
 
+/** Turm, der vom Standort aus über den Horizont ragt (Fixpunkt für den Kursabgleich). */
+export interface Landmark {
+  az: number;
+  dist: number;
+  /** Höhenwinkel von Fuß (Gelände) und Spitze (Grad). */
+  base: number;
+  top: number;
+  /** Höhe aus OSM (sonst übliche Höhe der Art). */
+  heightKnown: boolean;
+  kind: string;
+  name: string;
+}
+
 export interface HazeHorizon {
   dist: number;
   horizon: Float32Array;
@@ -83,4 +96,6 @@ export type WorkerMessage = { id: number } & (
   | { type: 'peaks'; peaks: Peak[]; progress: PeakTileProgress; error: string | null }
   /** Volle 360°-Silhouette und Kammlinien nach dem ersten Sektor. */
   | { type: 'horizon'; horizon: Float32Array; horizonDist: Float32Array; hazeHorizons: HazeHorizon[]; linePoints: Float32Array; lineOffsets: Uint32Array }
+  /** Türme, die über den Horizont ragen (nach der vollen Silhouette). */
+  | { type: 'landmarks'; landmarks: Landmark[] }
 );
