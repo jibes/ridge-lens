@@ -365,18 +365,17 @@ export function detectBody(
   azStep: number,
 ): MatchResult {
   const fail = (reason: MatchResult['reason']): MatchResult => ({ ok: false, dHeading: 0, dPitch: 0, fovScale: 1, cost: Infinity, reason });
-  const p = project(cam, body.az, body.alt);
+  // Die Höhe des Gestirns ist vom Kompass unabhängig: in einem Band um diese Höhe über die
+  // ganze Bildbreite suchen. Neben Stahl (Schiffsrumpf, Steg) liegt der Kompass 50–70° daneben
+  const p = project({ ...cam, heading: body.az }, body.az, body.alt);
   if (!p) return fail('few-columns');
   const sx = w / cam.width;
   const sy = h / cam.height;
   const F = cam.width / 2 / Math.tan((cam.hfov / 2) * RAD);
-  const cx = p[0] * sx;
   const cy = p[1] * sy;
-  // Weit suchen: Der Kompass liegt an Stahl (Steg, Schiff, Geländer) auch 15–20° daneben
-  const rx = F * Math.tan(30 * RAD) * sx;
   const ry = F * Math.tan(10 * RAD) * sy;
-  const x0 = Math.max(0, Math.floor(cx - rx));
-  const x1 = Math.min(w - 1, Math.ceil(cx + rx));
+  const x0 = 0;
+  const x1 = w - 1;
   const y0 = Math.max(0, Math.floor(cy - ry));
   const y1 = Math.min(h - 1, Math.ceil(cy + ry));
   if (x1 - x0 < 4 || y1 - y0 < 4) return fail('few-columns');

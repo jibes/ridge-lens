@@ -230,6 +230,16 @@ describe('sun and moon as reference', () => {
     expect(Math.abs(off.pitch + m.dPitch - truth.pitch)).toBeLessThan(0.5);
   });
 
+  it('finds the sun with a compass 60° off (next to a steel hull)', () => {
+    const img = renderSky(truth, horizon, [{ az: sun.az, alt: sun.alt, glow: 2.5 }]);
+    for (const dh of [60, -55]) {
+      const off: Camera = { ...truth, heading: truth.heading + dh, pitch: truth.pitch + 1 };
+      const m = detectBody(img, COLS, ROWS, off, sun, horizon, AZ_STEP);
+      expect(m.ok).toBe(true);
+      expect(Math.abs(deltaHeading(off.heading + m.dHeading, truth.heading))).toBeLessThan(0.6);
+    }
+  });
+
   it('recovers from the moon at night', () => {
     const moon: BodyTarget = { kind: 'moon', az: 214, alt: 10 };
     const img = renderSky(truth, horizon, [{ az: moon.az, alt: moon.alt, glow: 0.4 }], { night: true });
@@ -540,3 +550,7 @@ describe('forest on near hills', () => {
     expect(err(withTol)).toBeLessThanOrEqual(err(plain) + 1e-9);
   });
 });
+
+function deltaHeading(a: number, b: number): number {
+  return ((((a - b) % 360) + 540) % 360) - 180;
+}
