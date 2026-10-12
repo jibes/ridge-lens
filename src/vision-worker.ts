@@ -135,6 +135,8 @@ self.onmessage = (ev: MessageEvent<VisionRequest>) => {
   }
   const match = matchSkylineHaze(points, [horizon, ...haze], azStep, cam, cols, tols);
   step(`Silhouette ${fmt(match)}${match.ok ? ` Dunst ${match.band}` : ''}`);
+  // je Modell-Silhouette: voll, nur Gelände bis 15 km, bis 35 km (zeigt, warum „ambiguous“)
+  match.bands.forEach((m, i) => step(`  ${['voll', '15 km', '35 km'][i] ?? i} ${fmt(m)}`));
   if (!match.ok && msg.stars) {
     // Nachts: Sternmuster
     const st = msg.stars;

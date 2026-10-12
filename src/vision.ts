@@ -546,16 +546,16 @@ export function matchSkylineHaze(
   cam: Camera,
   totalColumns: number,
   tols?: ArrayLike<number>[],
-): MatchResult & { band: number } {
+): MatchResult & { band: number; bands: MatchResult[] } {
   const all = horizons.map((h, band) => ({ ...matchSkyline(points, h, azStep, cam, totalColumns, tols?.[band]), band }));
   const ok = all.filter((m) => m.ok).sort((a, b) => a.cost - b.cost);
-  if (!ok.length) return all[0];
+  if (!ok.length) return { ...all[0], bands: all };
   const [best, ...rest] = ok;
   for (const m of rest) {
     const agree = Math.abs(m.dHeading - best.dHeading) < 0.7 && Math.abs(m.dPitch - best.dPitch) < 0.3;
-    if (!agree && m.cost < best.cost * 1.6) return { ...best, ok: false, reason: 'ambiguous' };
+    if (!agree && m.cost < best.cost * 1.6) return { ...best, ok: false, reason: 'ambiguous', bands: all };
   }
-  return best;
+  return { ...best, bands: all };
 }
 
 /**
