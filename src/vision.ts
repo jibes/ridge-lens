@@ -682,6 +682,11 @@ export class SkylineAccumulator {
     }
   }
 
+  /** Abgedeckter Winkel (°) der letzten maxAge. */
+  coverage(now: number): number {
+    return this.samples(now).length * SkylineAccumulator.BIN;
+  }
+
   /** Abgedeckte Bins (nicht älter als maxAge). */
   private samples(now: number): { az: number; el: number }[] {
     const out: { az: number; el: number }[] = [];
@@ -695,10 +700,15 @@ export class SkylineAccumulator {
    * Kurs- und Neigungskorrektur (absolut) gegen die Modell-Silhouetten; mehrere wie beim
    * Dunst-Abgleich. Verlangt ≥ 50° Deckung, Struktur im Modell und eine eindeutige Lösung.
    */
-  match(horizons: ArrayLike<number>[], azStep: number, now: number): { ok: boolean; heading: number; pitch: number; cost: number } {
-    const fail = { ok: false, heading: 0, pitch: 0, cost: Infinity };
+  match(
+    horizons: ArrayLike<number>[],
+    azStep: number,
+    now: number,
+  ): { ok: boolean; heading: number; pitch: number; cost: number; coverage: number; reason?: 'coverage' | 'poor-fit' | 'ambiguous' | 'flat' } {
     const s = this.samples(now);
-    if (s.length * SkylineAccumulator.BIN < 50) return fail;
+    const coverage = s.length * SkylineAccumulator.BIN;
+    const fail = { ok: false, heading: 0, pitch: 0, cost: Infinity, coverage };
+    if (coverage < 50) return { ...fail, reason: 'coverage' as const };
     const res = new Float64Array(s.length);
     const evaluate = (h: ArrayLike<number>, dh: number) => {
       for (let i = 0; i < s.length; i++) res[i] = horizonAt(h, azStep, s[i].az + dh) - s[i].el;
@@ -712,7 +722,9 @@ export class SkylineAccumulator {
       for (let i = 0; i < keep; i++) n += e[i];
       return { dp, c: n / keep };
     };
-    let best = { ...fail, ok: true };
+    let best: { ok: boolean; heading: number; pitch: number; cost: number; coverage: number } = { ...fail, ok: true };
+    // Grund der am besten passenden abgelehnten Lösung (Diagnose)
+    let why: { reason: 'poor-fit' | 'ambiguous' | 'flat'; c: number; dh: number } = { reason: 'poor-fit', c: Infinity, dh: 0 };
     for (const h of horizons) {
       // Struktur: Streuung des Modells über die abgedeckten Richtungen (bei Kurs ≈ Sensor)
       const curve: { dh: number; c: number; dp: number }[] = [];
@@ -728,10 +740,14 @@ export class SkylineAccumulator {
       const rival = Math.min(...curve.filter((e) => Math.abs(e.dh - f.dh) > 2).map((e) => e.c));
       // Kontrast: mittlere Kosten der Kurve gegenüber dem Minimum (flaches Profil → kein Kontrast)
       const mean = curve.reduce((a, e) => a + e.c, 0) / curve.length;
-      if (f.c > 0.12 || rival < Math.max(f.c * 1.8, f.c + 0.04) || mean < Math.max(f.c * 2.5, f.c + 0.1)) continue;
-      if (f.c < best.cost) best = { ok: true, heading: f.dh, pitch: f.dp, cost: f.c };
+      const reason = f.c > 0.12 ? 'poor-fit' : mean < Math.max(f.c * 2.5, f.c + 0.1) ? 'flat' : rival < Math.max(f.c * 1.8, f.c + 0.04) ? 'ambiguous' : null;
+      if (reason) {
+        if (f.c < why.c) why = { reason, c: f.c, dh: f.dh };
+        continue;
+      }
+      if (f.c < best.cost) best = { ok: true, heading: f.dh, pitch: f.dp, cost: f.c, coverage };
     }
-    return best.cost < Infinity ? best : fail;
+    return best.cost < Infinity ? best : { ...fail, heading: why.dh, cost: why.c, reason: why.reason };
   }
 }
 

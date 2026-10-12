@@ -475,6 +475,8 @@ describe('panoramic accumulation', () => {
     const few = new SkylineAccumulator();
     feed(few, [200]);
     expect(few.match([hills], AZ_STEP, 1).ok).toBe(false);
+    expect(few.match([hills], AZ_STEP, 1).reason).toBe('coverage');
+    expect(few.coverage(1)).toBeLessThan(50);
     const flat = new SkylineAccumulator();
     const level = new Float32Array(3600).fill(0.8);
     for (const h of [165, 185, 205, 225, 245]) {
@@ -482,6 +484,7 @@ describe('panoramic accumulation', () => {
       flat.add(skylinePoints(t, t, level, { treesLeft: true, noSnow: true }), t, 0, 0, 0);
     }
     expect(flat.match([level], AZ_STEP, 1).ok).toBe(false);
+    expect(flat.match([level], AZ_STEP, 1).reason).toBe('flat');
   });
 });
 

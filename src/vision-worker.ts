@@ -50,6 +50,8 @@ export interface VisionResponse {
   source: 'skyline' | 'pitch' | 'pano' | 'stars' | BodyTarget['kind'];
   /** Himmelserkennung lief (ms), sonst Farbkanten. */
   segMs?: number;
+  /** Abgedeckter Winkel des Rundumprofils (°, letzte 90 s). */
+  panoCoverage?: number;
   debug?: VisionDebug;
 }
 
@@ -135,11 +137,11 @@ self.onmessage = (ev: MessageEvent<VisionRequest>) => {
   const now = performance.now();
   acc.add(skyPoints, cam, msg.offHeading, msg.offPitch, now);
   const reply = (match: MatchResult, source: VisionResponse['source']) =>
-    self.postMessage({ id: msg.id, cam, match, source, segMs, debug: dbg } satisfies VisionResponse);
+    self.postMessage({ id: msg.id, cam, match, source, segMs, panoCoverage: acc.coverage(performance.now()), debug: dbg } satisfies VisionResponse);
   const none: MatchResult = { ok: false, dHeading: 0, dPitch: 0, fovScale: 1, cost: Infinity };
   step(`Spalten ${points.length}/${cols} (Himmel darüber ${skyPoints.length})`);
   if (msg.moving) {
-    step('Schwenk: nur Rundumprofil gesammelt');
+    step(`Schwenk: Rundumprofil gesammelt, Deckung ${acc.coverage(now).toFixed(0)}°/50°`);
     reply(none, 'skyline');
     return;
   }
@@ -164,7 +166,9 @@ self.onmessage = (ev: MessageEvent<VisionRequest>) => {
     }
     // Einzelbild zu verdeckt oder zu flach: Rundumprofil aus den letzten Bildern
     const pano = acc.match([horizon, ...haze], azStep, now);
-    step(`Rundum ${pano.ok ? `✓ H ${pano.heading.toFixed(2)} P ${pano.pitch.toFixed(2)} c ${pano.cost.toFixed(3)}` : '✗'}`);
+    step(
+      `Rundum ${pano.ok ? `✓ H ${pano.heading.toFixed(2)} P ${pano.pitch.toFixed(2)} c ${pano.cost.toFixed(3)}` : `✗ ${pano.reason}${Number.isFinite(pano.cost) ? ` c ${pano.cost.toFixed(3)} (beste H ${pano.heading.toFixed(2)})` : ''}`} · Deckung ${pano.coverage.toFixed(0)}°/50°`,
+    );
     if (pano.ok) {
       const m: MatchResult = { ok: true, dHeading: pano.heading - msg.offHeading, dPitch: pano.pitch - msg.offPitch, fovScale: 1, cost: pano.cost };
       return reply(m, 'pano');

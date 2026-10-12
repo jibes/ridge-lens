@@ -46,6 +46,8 @@ Automatischer Abgleich (`src/vision.ts`, im Worker `src/vision-worker.ts`, absch
 
 **Falsche Korrektur nicht festschreiben:** Weicht die gespeicherte Kurskorrektur um mehr als 3° ab, sucht der Silhouettenabgleich zusätzlich ±20° um den rohen Kompass. Das Sensorprofil lernt und übernimmt nur Kursfehler bis 15° – größere sind örtliche Störungen (Stahl, Magnet) und würden sonst überallhin mitgenommen.
 
+**Hinweis bei ungeprüftem Kurs:** Gab es 60 s lang keinen Kurstreffer am Bild (Silhouette, Sonne/Mond, Sterne, Rundum), zeigt die Statuszeile: tagsüber (Sonne 3–60° hoch) „kurz zur Sonne richten“ mit Richtungspfeil, sonst „langsam 60–90° schwenken“ mit der bisherigen Deckung des Rundumprofils. Die Himmelserkennung läuft auch beim Schwenken, damit das Rundumprofil die KI-Linie nutzt; die Diagnose zeigt Deckung und Ablehnungsgrund (coverage, flat, ambiguous, poor-fit).
+
 **Diagnose im Bild** (Einstellungen → Kamera, `src/debug-overlay.ts`): erkannter Horizont (cyan = KI, gelb gestrichelt = Farbkanten), Himmelsmaske und alle Kennzahlen in einem Kasten über dem Dock – Version, Ort/GPS, roher und fusionierter Kompass, Ereignisraten, Korrekturen, gelerntes Profil, Bildwinkel, Abgleichstatus mit dem Ergebnis jeder Stufe (Silhouette, Sterne, Sonne/Mond, Rundum, Neigung), Übernahme bzw. Ablehnungsgrund, letzte Korrekturen. Ein Screenshot genügt zur Fehlersuche.
 
 Manuell: Gipfel antippen und anpeilen richtet den Kompass aus; mit zwei Fingern den Bildwinkel anpassen (Wert und Zurücksetzen in den Einstellungen).

@@ -1875,6 +1875,31 @@ skyAiIn.addEventListener('change', () => {
 /** Rechenzeit der letzten Himmelserkennung (ms), solange sie läuft. */
 let lastSegMs: number | undefined;
 
+/**
+ * Hinweis, wenn der Kurs länger als 60 s nicht am Bild bestätigt wurde: kurz zur Sonne
+ * richten (Sonnenerkennung ist unabhängig vom Grat), sonst langsam schwenken (Rundumprofil).
+ */
+let lastHeadingMatchAt = performance.now();
+let panoCoverage = 0;
+let cameraSince = Infinity;
+window.setInterval(() => {
+  const now = performance.now();
+  if (!cameraShown()) cameraSince = Infinity;
+  else cameraSince = Math.min(cameraSince, now);
+  const due =
+    sensorOn && cameraShown() && autoAlignIn.checked && !!pano?.complete && !manualCal && !document.hidden &&
+    now - Math.max(lastHeadingMatchAt, cameraSince) > 60_000;
+  if (!due) {
+    setNotice('align', null);
+    return;
+  }
+  const sun = visionBodies().find((b) => b.kind === 'sun');
+  if (sun && sun.alt > 3 && sun.alt < 60) {
+    const d = deltaDeg(sun.az, cam.heading);
+    const dir = Math.abs(d) < cam.hfov / 2 - 3 ? t('hint.inView') : `${d < 0 ? '←' : '→'} ${Math.abs(d).toFixed(0)}°`;
+    setNotice('align', () => t('hint.sun', { dir }));
+  } else setNotice('align', () => t('hint.pan', { cov: panoCoverage.toFixed(0) }));
+}, 1000);
 /** Diagnose-Overlay im Bild (Horizontlinien, Maske, Kennzahlen) für Screenshots. */
 const debugIn = $<HTMLInputElement>('debug-overlay');
 const DEBUG_KEY = 'ridge-lens-debug';
@@ -2026,7 +2051,8 @@ function visionTick() {
   visionCtx.drawImage(videoEl, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, cols, rows);
   const pixels = visionCtx.getImageData(0, 0, cols, rows).data;
   const stars = !moving ? starFrame(vw, vh, sw, sh) : undefined;
-  const seg = !moving && !stars && skyAiIn.checked ? segFrame(vw, vh, sw, sh) : undefined;
+  // auch beim Schwenken: dort entsteht das Rundumprofil
+  const seg = !stars && skyAiIn.checked ? segFrame(vw, vh, sw, sh) : undefined;
   const segBand = seg ? segBandNow : undefined;
   visionBusy = true;
   lastVisionSent = now;
@@ -2158,6 +2184,7 @@ function calibrateFromTilt(match: MatchResult, snap: Camera): boolean {
 visionWorker.onmessage = (ev: MessageEvent<VisionResponse>) => {
   visionBusy = false;
   lastSegMs = ev.data.segMs;
+  panoCoverage = ev.data.panoCoverage ?? 0;
   const { match, cam: snap } = ev.data;
   const source = ev.data.source;
   if (ev.data.debug) {
@@ -2184,6 +2211,7 @@ visionWorker.onmessage = (ev: MessageEvent<VisionResponse>) => {
   offset.heading = deltaDeg(offset.heading + VISION_GAIN * match.dHeading, 0);
   offset.pitch = Math.max(-20, Math.min(20, offset.pitch + VISION_GAIN * match.dPitch));
   saveOffset(source);
+  if (source !== 'pitch') lastHeadingMatchAt = performance.now();
   if (source !== 'pitch') checkCompass(deltaDeg(offsetHeadingAtSend + match.dHeading - manualAdj.heading, 0));
   // Ins Sensorprofil: die volle gemessene Korrektur (ohne manuellen Anteil) für die Haltung beim Aufnehmen
   const weight = { skyline: 1, stars: 1, pano: 0.7, sun: 0.6, moon: 0.6, pitch: 0.5 }[source];
