@@ -1,0 +1,19 @@
+# Security updates come from the repo setting (Settings → Code security), not from this file.
+# Version updates: monthly, one PR per ecosystem. Majors are done by hand (apps-data STANDARD.md §9).
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: monthly }
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: monthly }
+    groups:
+      actions:
+        patterns: ['*']
